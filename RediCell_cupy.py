@@ -111,6 +111,7 @@ class RediCell_CuPy:
             for direction in range(self.ndim*2): # up down left right
                 # this results in unit of second per molecule
                 diffusion_vector.append(mol.diffusion_coefficient / self.spacing**2) 
+        diffusion_vector.append(1e15)
         self.diffusion_vector = np.array(diffusion_vector)
         
         if self.reaction_set is not None:
@@ -148,18 +149,20 @@ class RediCell_CuPy:
     def maintain_external_conditions(self):
         pass
 
-    @profile
+    # @profile
     def react_diffuse(self, t_step):
         
         pad = np.zeros((self.ndim+1, 2)).astype(int)
         pad[0, 1] += 1
         
         # Diffuse part
-        diffuse_voxel = np.repeat(self.voxel_matrix, 2*self.ndim, axis=0) 
-        diffuse_voxel *= self.diffusion_matrix[:2*self.ndim*self.num_types] * t_step
+        diffuse_voxel_shape = list(self.voxel_matrix.shape)
+        diffuse_voxel_shape[0] = diffuse_voxel_shape[0] * 2 * self.ndim + 1
+        diffuse_voxel = np.ones(tuple(diffuse_voxel_shape))
+        diffuse_voxel[:-1] = np.repeat(self.voxel_matrix, 2*self.ndim, axis=0)
+        diffuse_voxel *= self.diffusion_matrix * t_step
         diffuse_candidate = np.cumsum(diffuse_voxel, axis=0)
-        diffuse_candidate = np.pad(diffuse_candidate, pad_width=pad.get(), constant_values=1)
-        no_diffusion_choice_idx = len(diffuse_candidate) - 1
+        no_diffusion_choice_idx = self.ndim * 2 * self.num_types
         if diffuse_candidate[-2].max() > 1:
             print('Warning: transition probability > 1')
         random_sampling = np.random.random(np.asnumpy(self.true_sides))
@@ -172,7 +175,7 @@ class RediCell_CuPy:
         
         # React part
         if self.reaction_set is not None:
-            reaction_voxel = np.zeros((self.num_reaction, *np.asnumpy(self.true_sides)))
+            reaction_voxel = np.ones((self.num_reaction+1, *np.asnumpy(self.true_sides)))
             for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
                 # Only if no diffusion happened there - guarantees no negative mol count
                 if len(reagent) == 2:
@@ -184,14 +187,13 @@ class RediCell_CuPy:
             #     print(self.voxel_matrix[reagent].shape, reaction_voxel.max(axis=(1, 2, 3)), coeff, t_step)                
             
             reaction_candidate = np.cumsum(reaction_voxel, axis=0)
-            reaction_candidate = np.pad(reaction_candidate, pad_width=pad.get(), constant_values=1)
             random_sampling = np.random.random(np.asnumpy(self.true_sides))
             reaction_choice = np.argmax(random_sampling < reaction_candidate, axis=0)
             # print(np.sum(reaction_choice == 0))
         
         
             # Currently only this is implemented, and only diffusion
-        for choice in range(len(self.diffusion_vector)):
+        for choice in range(2*self.ndim*self.num_types):
             if self.ndim >= 1:
                 if choice % (2*self.ndim) == 0: 
                     move_action = (diffusion_choice[1:] == choice) * self.not_barrier_matrix[:-1]
