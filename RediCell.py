@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+
 class RediCell:
     def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, wall=True):
         # sides in number of voxels
@@ -29,8 +30,6 @@ class RediCell:
         else:
             self.true_sides = self.sides
 
-        
-            
         self.t_step = t_step
         self.t_trace = []
         self.conc_trace = []
@@ -55,6 +54,7 @@ class RediCell:
         
         self.diffusion_matrix = np.tile(np.expand_dims(self.diffusion_vector, tuple(range(1, self.ndim+1))), 
                                                    (1, *self.voxel_matrix.shape[1:]))
+        
         if self.reaction_set is not None:
             # self.reagent_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
             #                                            (1, *self.voxel_matrix.shape[1:])) 
@@ -108,7 +108,8 @@ class RediCell:
         for mol in self.molecule_types:
             for direction in range(self.ndim*2): # up down left right
                 # this results in unit of second per molecule
-                diffusion_vector.append(mol.diffusion_coefficient / self.spacing**2) 
+                diffusion_vector.append(mol.diffusion_coefficient / self.spacing**2)
+        diffusion_vector.append(0)
         self.diffusion_vector = np.array(diffusion_vector)
         
         if self.reaction_set is not None:
@@ -146,17 +147,22 @@ class RediCell:
     def maintain_external_conditions(self):
         pass
 
+    @profile
     def react_diffuse(self, t_step):
         
         pad = np.zeros((self.ndim+1, 2)).astype(int)
         pad[0, 1] += 1
         
         # Diffuse part
-        diffuse_voxel = np.repeat(self.voxel_matrix, 2*self.ndim, axis=0) 
-        diffuse_voxel *= self.diffusion_matrix[:2*self.ndim*self.num_types] * t_step
+        diffuse_voxel_shape = list(self.voxel_matrix.shape)
+        diffuse_voxel_shape[0] = diffuse_voxel_shape[0] * 2 * self.ndim + 1
+        diffuse_voxel = np.ones(tuple(diffuse_voxel_shape))
+        diffuse_voxel[:-1] = np.repeat(self.voxel_matrix, 2*self.ndim, axis=0)
+        diffuse_voxel *= self.diffusion_matrix * t_step
+        diffuse_voxel[-1] = 1
         diffuse_candidate = np.cumsum(diffuse_voxel, axis=0)
-        diffuse_candidate = np.pad(diffuse_candidate, pad_width=pad, constant_values=1)
-        no_diffusion_choice_idx = len(diffuse_candidate) - 1
+        # diffuse_candidate = np.pad(diffuse_candidate, pad_width=pad, constant_values=1)
+        no_diffusion_choice_idx = self.ndim * 2 * self.num_types - 1
         if diffuse_candidate[-2].max() > 1:
             print('Warning: transition probability > 1')
         random_sampling = np.random.random(self.true_sides)
@@ -188,7 +194,7 @@ class RediCell:
         
         
             # Currently only this is implemented, and only diffusion
-        for choice in range(len(self.diffusion_vector)):
+        for choice in range(2*self.ndim*self.num_types):
             if self.ndim >= 1:
                 if choice % (2*self.ndim) == 0: 
                     move_action = (diffusion_choice[1:] == choice) * self.not_barrier_matrix[:-1]

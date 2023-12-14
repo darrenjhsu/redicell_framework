@@ -31,8 +31,6 @@ class RediCell_CuPy:
         else:
             self.true_sides = self.sides
 
-        
-            
         self.t_step = t_step
         self.t_trace = []
         self.conc_trace = []
@@ -150,6 +148,7 @@ class RediCell_CuPy:
     def maintain_external_conditions(self):
         pass
 
+    @profile
     def react_diffuse(self, t_step):
         
         pad = np.zeros((self.ndim+1, 2)).astype(int)
