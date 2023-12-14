@@ -1,6 +1,7 @@
 import cupy as np
 import matplotlib.pyplot as plt
 import time
+import nvtx
 
 class RediCell_CuPy:
     
@@ -24,7 +25,7 @@ class RediCell_CuPy:
         self.voxel_matrix = []
         assert len(sides) > 0 and len(sides) < 4
         self.ndim = len(sides)
-        self.sides = np.array(sides).astype(int) # Should be [32, 32] or [32, 32, 32]
+        self.sides = np.asnumpy(sides).astype(int) # Should be [32, 32] or [32, 32, 32]
         
         if self.wall:
             self.true_sides = self.sides + 2
@@ -49,29 +50,34 @@ class RediCell_CuPy:
     
     def partition(self):
         # m, x, y matrix
-        self.voxel_matrix = np.zeros((self.num_types, *np.asnumpy(self.true_sides)))
+        self.voxel_matrix = np.zeros((self.num_types, *self.true_sides)).astype(np.float32)
         
 
         self.construct_possible_actions()
         print(f'Diffusion vector is {self.diffusion_vector}')
         
         self.diffusion_matrix = np.tile(np.expand_dims(self.diffusion_vector, tuple(range(1, self.ndim+1))), 
-                                                   (1, *np.asnumpy(self.voxel_matrix.shape[1:])))
+                                                   (1, *self.true_sides[1:])).astype(np.float32)
         if self.reaction_set is not None:
             # self.reagent_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
             #                                            (1, *self.voxel_matrix.shape[1:])) 
             #                              for x in self.reagent_vector_list]
 
             self.reaction_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
-                                                       (1, *np.asnumpy(self.voxel_matrix.shape[1:])))
+                                                       (1, *self.true_sides[1:])).astype(np.float32)
                                          for x in self.reaction_vector_list]
 
         if self.wall:
             self.set_border_wall()
         #self.edit_action_vector()
 
+        self.diffuse_voxel_shape = list(self.voxel_matrix.shape)
+        self.diffuse_voxel_shape[0] = self.diffuse_voxel_shape[0] * 2 * self.ndim + 1
+        self.diffuse_voxel_shape = tuple(self.diffuse_voxel_shape)
+        self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
+
     def set_border_wall(self): 
-        self.not_barrier_matrix = np.ones(np.asnumpy(self.true_sides))
+        self.not_barrier_matrix = np.ones(self.true_sides).astype(np.float32)
         if self.ndim >= 1:
             self.not_barrier_matrix[0] = 0
             self.not_barrier_matrix[-1] = 0
@@ -80,7 +86,17 @@ class RediCell_CuPy:
             self.not_barrier_matrix[:, -1] = 0
         if self.ndim >= 3:
             self.not_barrier_matrix[:, :, 0] = 0
-            self.not_barrier_matrix[:, :, -1] = 0            
+            self.not_barrier_matrix[:, :, -1] = 0 
+
+        if self.ndim >= 1:
+            self.not_barrier_matrix_up = self.not_barrier_matrix[:-1]
+            self.not_barrier_matrix_down = self.not_barrier_matrix[1:]
+        if self.ndim >= 2:
+            self.not_barrier_matrix_left = self.not_barrier_matrix[:, :-1]
+            self.not_barrier_matrix_right = self.not_barrier_matrix[:, 1:]
+        if self.ndim >= 3:
+            self.not_barrier_matrix_front = self.not_barrier_matrix[:, :, :-1]
+            self.not_barrier_matrix_back = self.not_barrier_matrix[:, :, 1:]
     
     def plot_wall(self):
         plt.imshow(self.not_barrier_matrix, cmap='Oranges_r', vmax=1, vmin=0)
@@ -111,7 +127,7 @@ class RediCell_CuPy:
             for direction in range(self.ndim*2): # up down left right
                 # this results in unit of second per molecule
                 diffusion_vector.append(mol.diffusion_coefficient / self.spacing**2) 
-        diffusion_vector.append(1e15)
+        diffusion_vector.append(1e5)
         self.diffusion_vector = np.array(diffusion_vector)
         
         if self.reaction_set is not None:
@@ -124,7 +140,7 @@ class RediCell_CuPy:
                 for product in reaction[1]:
                     reaction_vector[self.mol_to_id[product]] = 1
                 self.reagent_vector_list.append(reagent_vector)
-                self.reaction_vector_list.append(reaction_vector.astype(int))
+                self.reaction_vector_list.append(reaction_vector.astype(np.float32))
                 self.reaction_coefficients.append(reaction[2])
             print(self.reagent_vector_list)
         
@@ -138,8 +154,8 @@ class RediCell_CuPy:
             print('No reactions')
     
     def determine_maximum_timestep(self):
-        print(f'Max time step is {1 / np.max(self.diffusion_vector) / 4 / self.voxel_matrix.max() :.2e} s (max {self.voxel_matrix.max()} particles in voxel)')
-        return 1 / np.max(self.diffusion_vector) / 4 / self.voxel_matrix.max()
+        print(f'Max time step is {1 / np.max(self.diffusion_vector[:-1]) / 4 / self.voxel_matrix.max() :.2e} s (max {self.voxel_matrix.max()} particles in voxel)')
+        return 1 / np.max(self.diffusion_vector[:-1]) / 4 / self.voxel_matrix.max()
         
     def add_molecules(self, molecule_type, molecule_count):
         self.molecule_count[molecule_type] = molecule_count
@@ -149,89 +165,98 @@ class RediCell_CuPy:
     def maintain_external_conditions(self):
         pass
 
-    # @profile
-    def react_diffuse(self, t_step):
-        
-        pad = np.zeros((self.ndim+1, 2)).astype(int)
-        pad[0, 1] += 1
-        
-        # Diffuse part
-        diffuse_voxel_shape = list(self.voxel_matrix.shape)
-        diffuse_voxel_shape[0] = diffuse_voxel_shape[0] * 2 * self.ndim + 1
-        diffuse_voxel = np.ones(tuple(diffuse_voxel_shape))
-        diffuse_voxel[:-1] = np.repeat(self.voxel_matrix, 2*self.ndim, axis=0)
-        diffuse_voxel *= self.diffusion_matrix * t_step
-        diffuse_candidate = np.cumsum(diffuse_voxel, axis=0)
-        no_diffusion_choice_idx = self.ndim * 2 * self.num_types
-        if diffuse_candidate[-2].max() > 1:
-            print('Warning: transition probability > 1')
-        random_sampling = np.random.random(np.asnumpy(self.true_sides))
-        diffusion_choice = np.argmax(random_sampling < diffuse_candidate, axis=0)
-        no_diffusion_voxel = (diffusion_choice == no_diffusion_choice_idx)
-        # print(np.sum(no_action_voxel))
-
-        # Could use this to skip actions but ... doesn't seem like much help
-        # action_count = np.bincount(action_choice.flatten())
-        
-        # React part
-        if self.reaction_set is not None:
-            reaction_voxel = np.ones((self.num_reaction+1, *np.asnumpy(self.true_sides)))
-            for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
-                # Only if no diffusion happened there - guarantees no negative mol count
-                if len(reagent) == 2:
-                    reaction_voxel[idx] = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
-                if len(reagent) == 1:
-                    reaction_voxel[idx] = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff * t_step)
-                
-            # if reaction_voxel.max() > 0:
-            #     print(self.voxel_matrix[reagent].shape, reaction_voxel.max(axis=(1, 2, 3)), coeff, t_step)                
+    @nvtx.annotate("react_diffuse()", color="purple")
+    def react_diffuse(self, t_step, warning=True):
+        with nvtx.annotate("diffuse", color="orange"):
             
-            reaction_candidate = np.cumsum(reaction_voxel, axis=0)
-            random_sampling = np.random.random(np.asnumpy(self.true_sides))
-            reaction_choice = np.argmax(random_sampling < reaction_candidate, axis=0)
-            # print(np.sum(reaction_choice == 0))
+                # Diffuse part
+            with nvtx.annotate("vox1", color="green"):    
+                diffuse_voxel = np.ones(self.diffuse_voxel_shape, dtype=np.float32)
+            with nvtx.annotate("repeat", color="green"):
+                diffuse_voxel[:-1] = np.repeat(self.voxel_matrix, 2*self.ndim, axis=0)
+            with nvtx.annotate("scale", color="green"):
+                diffuse_voxel *= self.diffusion_matrix * t_step
+            with nvtx.annotate("cumsum", color="green"):
+                diffuse_candidate = np.cumsum(diffuse_voxel, axis=0, dtype=np.float32)
+                if warning:
+                    if diffuse_candidate[-2].max() > 1:
+                        print('Warning: transition probability > 1')
+            with nvtx.annotate("random", color="green"):
+                random_sampling = np.random.random(self.true_sides, dtype=np.float32)
+            with nvtx.annotate("choice", color="green"):
+                diffusion_choice = np.argmax(random_sampling < diffuse_candidate, axis=0)
+    
+                # print(no_diffusion_voxel.dtype)
         
+                # Could use this to skip actions but ... doesn't seem like much help
+                # action_count = np.bincount(action_choice.flatten())
         
-            # Currently only this is implemented, and only diffusion
-        for choice in range(2*self.ndim*self.num_types):
-            if self.ndim >= 1:
-                if choice % (2*self.ndim) == 0: 
-                    move_action = (diffusion_choice[1:] == choice) * self.not_barrier_matrix[:-1]
-                    self.voxel_matrix[choice//(2*self.ndim), 1:] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :-1] += move_action
-                if choice % (2*self.ndim) == 1:
-                    move_action = (diffusion_choice[:-1] == choice) * self.not_barrier_matrix[1:]
-                    self.voxel_matrix[choice//(2*self.ndim), :-1] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), 1:] += move_action
-            if self.ndim >= 2:
-                if choice % (2*self.ndim) == 2:
-                    move_action = (diffusion_choice[:, 1:] == choice) * self.not_barrier_matrix[:, :-1]
-                    self.voxel_matrix[choice//(2*self.ndim), :, 1:] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, :-1] += move_action
-                if choice % (2*self.ndim) == 3:
-                    move_action = (diffusion_choice[:, :-1] == choice) * self.not_barrier_matrix[:, 1:]
-                    self.voxel_matrix[choice//(2*self.ndim), :, :-1] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, 1:] += move_action
-            if self.ndim >= 3:
-                if choice % (2*self.ndim) == 4:
-                    move_action = (diffusion_choice[:, :, 1:] == choice) * self.not_barrier_matrix[:, :, :-1]
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, 1:] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, :-1] += move_action
-                if choice % (2*self.ndim) == 5:
-                    move_action = (diffusion_choice[:, :, :-1] == choice) * self.not_barrier_matrix[:,  :, 1:]
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, :-1] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, 1:] += move_action
-            
-        if self.reaction_set is not None:
-            for choice in range(self.num_reaction):
-                # print(self.voxel_matrix.shape, self.reaction_matrix_list[choice].shape, no_diffusion_voxel.shape, reaction_choice.shape)
-                self.voxel_matrix += self.reaction_matrix_list[choice] * no_diffusion_voxel * (reaction_choice == choice)
+        with nvtx.annotate("move_diffuse", color="orange"):
+            for choice in range(2*self.ndim*self.num_types):
+                if self.ndim >= 1:
+                    with nvtx.annotate("dir1", color="green"):
+                        if choice % (2*self.ndim) == 0: 
+                            move_action = (diffusion_choice[1:] == choice) * self.not_barrier_matrix_up
+                            self.voxel_matrix[choice//(2*self.ndim), 1:] -= move_action
+                            self.voxel_matrix[choice//(2*self.ndim), :-1] += move_action
+                    with nvtx.annotate("dir2", color="green"):
+                        if choice % (2*self.ndim) == 1:
+                            move_action = (diffusion_choice[:-1] == choice) * self.not_barrier_matrix_down
+                            self.voxel_matrix[choice//(2*self.ndim), :-1] -= move_action
+                            self.voxel_matrix[choice//(2*self.ndim), 1:] += move_action
+                if self.ndim >= 2:
+                    with nvtx.annotate("dir3", color="green"):
+                        if choice % (2*self.ndim) == 2:
+                            move_action = (diffusion_choice[:, 1:] == choice) * self.not_barrier_matrix_left
+                            self.voxel_matrix[choice//(2*self.ndim), :, 1:] -= move_action
+                            self.voxel_matrix[choice//(2*self.ndim), :, :-1] += move_action
+                    with nvtx.annotate("dir4", color="green"):
+                        if choice % (2*self.ndim) == 3:
+                            move_action = (diffusion_choice[:, :-1] == choice) * self.not_barrier_matrix_right
+                            self.voxel_matrix[choice//(2*self.ndim), :, :-1] -= move_action
+                            self.voxel_matrix[choice//(2*self.ndim), :, 1:] += move_action
+                if self.ndim >= 3:
+                    with nvtx.annotate("dir5", color="green"):
+                        if choice % (2*self.ndim) == 4:
+                            move_action = (diffusion_choice[:, :, 1:] == choice) * self.not_barrier_matrix_front
+                            self.voxel_matrix[choice//(2*self.ndim), :, :, 1:] -= move_action
+                            self.voxel_matrix[choice//(2*self.ndim), :, :, :-1] += move_action
+                    with nvtx.annotate("dir6", color="green"):
+                        if choice % (2*self.ndim) == 5:
+                            move_action = (diffusion_choice[:, :, :-1] == choice) * self.not_barrier_matrix_back
+                            self.voxel_matrix[choice//(2*self.ndim), :, :, :-1] -= move_action
+                            self.voxel_matrix[choice//(2*self.ndim), :, :, 1:] += move_action
+                        
+        with nvtx.annotate("react", color="orange"):
+            # React part
+            if self.reaction_set is not None:
+                reaction_voxel = np.ones(self.reaction_voxel_shape, dtype=np.float32)
+                for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
+                    # Only if no diffusion happened there - guarantees no negative mol count
+                    if len(reagent) == 2:
+                        reaction_voxel[idx] = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
+                    if len(reagent) == 1:
+                        reaction_voxel[idx] = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff * t_step)
                     
-        self.cumulative_t += t_step
-        self.t_trace.append(self.cumulative_t)
-        self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
+                # if reaction_voxel.max() > 0:
+                #     print(self.voxel_matrix[reagent].shape, reaction_voxel.max(axis=(1, 2, 3)), coeff, t_step)                
                 
-    def simulate(self, steps, t_step=None, plot_every=None, timing=False):
+                reaction_candidate = np.cumsum(reaction_voxel, axis=0, dtype=np.float32)
+                random_sampling = np.random.random(self.true_sides, dtype=np.float32)
+                reaction_choice = np.argmax(random_sampling < reaction_candidate, axis=0)
+                # print(np.sum(reaction_choice == 0))
+        with nvtx.annotate("move_react", color="orange"):   
+            if self.reaction_set is not None:
+                for choice in range(self.num_reaction):
+                    # print(self.voxel_matrix.shape, self.reaction_matrix_list[choice].shape, no_diffusion_voxel.shape, reaction_choice.shape)
+                    # self.voxel_matrix += self.reaction_matrix_list[choice] * no_diffusion_voxel * (reaction_choice == choice)
+                    self.voxel_matrix += self.reaction_matrix_list[choice] * (reaction_choice == choice)
+                        
+            self.cumulative_t += t_step
+            self.t_trace.append(self.cumulative_t)
+            self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
+                
+    def simulate(self, steps, t_step=None, plot_every=None, timing=False, warning=True):
         if not self.initialized:
             self.initialize()
         if t_step is not None:
@@ -247,7 +272,7 @@ class RediCell_CuPy:
                 print(f'{(t1 - t0):.2f} s - {(t1-t0)*1000 / step:.2f} ms / step')
                 
             self.maintain_external_conditions()
-            self.react_diffuse(self.t_step)
+            self.react_diffuse(self.t_step, warning=warning)
             if plot_every is not None:
                 if step % plot_every == 0:
                     self.plot(self.molecule_names)

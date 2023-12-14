@@ -2,7 +2,9 @@ import numpy as np
 import time
 from RediCell_cupy import *
 import argparse
-
+import nvtx
+# from cupyx.profiler import benchmark
+# import cupy
 
 def main(dim, side, steps):
     mol_A = Molecule('A', diffusion_coefficient=8.15e-14)
@@ -30,7 +32,11 @@ def main(dim, side, steps):
                                np.random.randint(1, side, num_mol - int(a.voxel_matrix[i].sum())),
                                np.random.randint(1, side, num_mol - int(a.voxel_matrix[i].sum()))] = 1
     
+    a.react_diffuse(t_step=1e-4)
+    # cupy.cuda.profiler.start()
     a.simulate(steps, t_step=1e-4, plot_every=None, timing=True)
+    # cupy.cuda.profiler.stop()
+    # print(benchmark(a.react_diffuse, (1e-4,), n_repeat=200)) 
 
     
 if __name__ == '__main__':
