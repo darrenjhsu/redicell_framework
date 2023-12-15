@@ -23,7 +23,7 @@ class RediCell:
         self.voxel_matrix = []
         assert len(sides) > 0 and len(sides) < 4
         self.ndim = len(sides)
-        self.sides = np.array(sides) # Should be [32, 32] or [32, 32, 32]
+        self.sides = np.array(sides).astype(int) # Should be [32, 32] or [32, 32, 32]
         
         if self.wall:
             self.true_sides = self.sides + 2
@@ -48,12 +48,13 @@ class RediCell:
     def partition(self):
         # m, x, y matrix
         self.voxel_matrix = np.zeros((self.num_types, *self.true_sides))
-
+        self.voxel_matrix_shape = self.voxel_matrix.shape
+        
         self.construct_possible_actions()
         print(f'Diffusion vector is {self.diffusion_vector}')
         
-        self.diffusion_matrix = np.tile(np.expand_dims(self.diffusion_vector, tuple(range(1, self.ndim+1))), 
-                                                   (1, *self.voxel_matrix.shape[1:]))
+        # self.diffusion_matrix = np.tile(np.expand_dims(self.diffusion_vector, tuple(range(1, self.ndim+1))), 
+        #                                            (1, *self.voxel_matrix.shape[1:]))
         
         if self.reaction_set is not None:
             # self.reagent_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
@@ -61,25 +62,47 @@ class RediCell:
             #                              for x in self.reagent_vector_list]
 
             self.reaction_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
-                                                       (1, *self.voxel_matrix.shape[1:])) 
+                                                       (1, *self.voxel_matrix.shape[1:])).astype(np.float32)
                                          for x in self.reaction_vector_list]
 
         if self.wall:
             self.set_border_wall()
         #self.edit_action_vector()
 
-    def set_border_wall(self): 
-        self.not_barrier_matrix = np.ones(self.true_sides)
-        if self.ndim >= 1:
-            self.not_barrier_matrix[0] = 0
-            self.not_barrier_matrix[-1] = 0
-        if self.ndim >= 2:
-            self.not_barrier_matrix[:, 0] = 0
-            self.not_barrier_matrix[:, -1] = 0
-        if self.ndim >= 3:
-            self.not_barrier_matrix[:, :, 0] = 0
-            self.not_barrier_matrix[:, :, -1] = 0            
+        self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
     
+    def set_border_wall(self, propagate=False): 
+        if not propagate:
+            # just build wall
+            self.not_barrier_matrix = np.ones(self.voxel_matrix_shape).astype(bool)
+            if self.ndim >= 1:
+                self.not_barrier_matrix[:, 0] = 0
+                self.not_barrier_matrix[:, -1] = 0
+            if self.ndim >= 2:
+                self.not_barrier_matrix[:, :, 0] = 0
+                self.not_barrier_matrix[:, :, -1] = 0
+            if self.ndim >= 3:
+                self.not_barrier_matrix[:, :, :, 0] = 0
+                self.not_barrier_matrix[:, :, :, -1] = 0 
+        else:
+            self.not_barrier_matrix = np.repeat(np.expand_dims(self.not_barrier_matrix, axis=0), self.num_types, axis=0)
+
+        if self.ndim >= 1:
+            self.not_barrier_matrix_up = self.not_barrier_matrix[:, :-1]
+            self.not_barrier_matrix_down = self.not_barrier_matrix[:, 1:]
+        if self.ndim >= 2:
+            self.not_barrier_matrix_left = self.not_barrier_matrix[:, :, :-1]
+            self.not_barrier_matrix_right = self.not_barrier_matrix[:, :, 1:]
+        if self.ndim >= 3:
+            self.not_barrier_matrix_front = self.not_barrier_matrix[:, :, :, :-1]
+            self.not_barrier_matrix_back = self.not_barrier_matrix[:, :, :, 1:]
+            
+        self.not_barrier_matrix = self.not_barrier_matrix[0]      
+    
+    def propagate_barrier(self):
+        # Propagate the not_barrier_matrix to other dimensions
+        self.set_border_wall(propagate=True)
+        
     def plot_wall(self):
         plt.imshow(self.not_barrier_matrix, cmap='Oranges_r', vmax=1, vmin=0)
         
@@ -101,16 +124,12 @@ class RediCell:
     def construct_possible_actions(self):
         # up, down, left, right for each kind of molecule
         # then reactions
-        diffusion_vector = []
+        self.diffusion_vector = []
         self.reagent_vector_list = []
         self.reaction_vector_list = []
         self.reaction_coefficients = []
         for mol in self.molecule_types:
-            for direction in range(self.ndim*2): # up down left right
-                # this results in unit of second per molecule
-                diffusion_vector.append(mol.diffusion_coefficient / self.spacing**2)
-        diffusion_vector.append(1e15)
-        self.diffusion_vector = np.array(diffusion_vector)
+            self.diffusion_vector.append(self.ndim * 2 * mol.diffusion_coefficient / self.spacing**2) 
         
         if self.reaction_set is not None:
             for reaction in self.reaction_set.reaction:
@@ -136,8 +155,8 @@ class RediCell:
             print('No reactions')
     
     def determine_maximum_timestep(self):
-        print(f'Max time step is {1 / np.max(self.diffusion_vector) / 4 / self.voxel_matrix.max() :.2e} s (max {self.voxel_matrix.max()} particles in voxel)')
-        return 1 / np.max(self.diffusion_vector) / 4 / self.voxel_matrix.max()
+        print(f'Max time step is {1 / np.max(self.diffusion_vector/2/self.ndim) / 4 / self.voxel_matrix.max() :.2e} s (max {self.voxel_matrix.max()} particles in voxel)')
+        return 1 / np.max(self.diffusion_vector/2/self.ndim) / 4 / self.voxel_matrix.max()
         
     def add_molecules(self, molecule_type, molecule_count):
         self.molecule_count[molecule_type] = molecule_count
@@ -149,79 +168,81 @@ class RediCell:
 
     # @profile
     def react_diffuse(self, t_step):
-        
-        # Diffuse part
-        diffuse_voxel_shape = list(self.voxel_matrix.shape)
-        diffuse_voxel_shape[0] = diffuse_voxel_shape[0] * 2 * self.ndim + 1
-        diffuse_voxel = np.ones(tuple(diffuse_voxel_shape))
-        diffuse_voxel[:-1] = np.repeat(self.voxel_matrix, 2*self.ndim, axis=0)
-        diffuse_voxel *= self.diffusion_matrix * t_step
-        diffuse_candidate = np.cumsum(diffuse_voxel, axis=0)
-        # diffuse_candidate = np.pad(diffuse_candidate, pad_width=pad, constant_values=1)
-        no_diffusion_choice_idx = self.ndim * 2 * self.num_types
-        if diffuse_candidate[-2].max() > 1:
-            print('Warning: transition probability > 1')
-        random_sampling = np.random.random(self.true_sides)
-        diffusion_choice = np.argmax(random_sampling < diffuse_candidate, axis=0)
-        no_diffusion_voxel = (diffusion_choice == no_diffusion_choice_idx)
+        diffuse_voxel = np.zeros(self.voxel_matrix_shape, dtype=np.float32)
+        random_choice = np.random.random(self.voxel_matrix_shape) * 2 * self.ndim + 1
+        random_sampling = np.random.random(self.voxel_matrix_shape)
+        for idx in range(self.num_types):
+            # Diffuse part
+            diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] * t_step
+            random_choice[idx] += idx * 2 * self.ndim
 
-        # Could use this to skip actions but ... doesn't seem like much help
-        # action_count = np.bincount(action_choice.flatten())
-        
-        # React part
-        if self.reaction_set is not None:
-            reaction_voxel = np.ones((self.num_reaction+1, *self.true_sides))
-            for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
-                # Only if no diffusion happened there - guarantees no negative mol count
-                if len(reagent) == 2:
-                    reaction_voxel[idx] = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
-                if len(reagent) == 1:
-                    reaction_voxel[idx] = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff * t_step)
-                
-            # if reaction_voxel.max() > 0:
-            #     print(self.voxel_matrix[reagent].shape, reaction_voxel.max(axis=(1, 2, 3)), coeff, t_step)                
+        diffusion_choice = random_choice.astype(int) * (random_sampling < diffuse_voxel)
             
-            reaction_candidate = np.cumsum(reaction_voxel, axis=0)
-            # reaction_candidate = np.pad(reaction_candidate, pad_width=pad, constant_values=1)
-            random_sampling = np.random.random(self.true_sides)
-            reaction_choice = np.argmax(random_sampling < reaction_candidate, axis=0)
-            # print(np.sum(reaction_choice == 0))
         
-        
-            # Currently only this is implemented, and only diffusion
-        for choice in range(2*self.ndim*self.num_types):
+        for choicep1 in range(1, 2 * self.ndim + 1):
+            choice = choicep1 - 1
             if self.ndim >= 1:
+            
                 if choice % (2*self.ndim) == 0: 
-                    move_action = (diffusion_choice[1:] == choice) * self.not_barrier_matrix[:-1]
-                    self.voxel_matrix[choice//(2*self.ndim), 1:] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :-1] += move_action
+                    move_action = (diffusion_choice[:, 1:] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_up
+                    self.voxel_matrix[:, 1:] -= move_action
+                    self.voxel_matrix[:, :-1] += move_action
+                    continue
+                    
                 if choice % (2*self.ndim) == 1:
-                    move_action = (diffusion_choice[:-1] == choice) * self.not_barrier_matrix[1:]
-                    self.voxel_matrix[choice//(2*self.ndim), :-1] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), 1:] += move_action
+                    if self.ndim == 1: # Does not really happen
+                        move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_down * (diffusion_choice[:, :-1] > 0)
+                    else:
+                        move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_down
+                    self.voxel_matrix[:, :-1] -= move_action
+                    self.voxel_matrix[:, 1:] += move_action
+                    continue
+                    
             if self.ndim >= 2:
                 if choice % (2*self.ndim) == 2:
-                    move_action = (diffusion_choice[:, 1:] == choice) * self.not_barrier_matrix[:, :-1]
-                    self.voxel_matrix[choice//(2*self.ndim), :, 1:] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, :-1] += move_action
+                    move_action = (diffusion_choice[:, :, 1:] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_left
+                    self.voxel_matrix[:, :, 1:] -= move_action
+                    self.voxel_matrix[:, :, :-1] += move_action
+                    continue
+                
                 if choice % (2*self.ndim) == 3:
-                    move_action = (diffusion_choice[:, :-1] == choice) * self.not_barrier_matrix[:, 1:]
-                    self.voxel_matrix[choice//(2*self.ndim), :, :-1] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, 1:] += move_action
+                    if self.ndim == 2:
+                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_right * (diffusion_choice[:, :, :-1] > 0)
+                    else:
+                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_right
+                    self.voxel_matrix[:, :, :-1] -= move_action
+                    self.voxel_matrix[:, :, 1:] += move_action
+                    continue
+                    
             if self.ndim >= 3:
                 if choice % (2*self.ndim) == 4:
-                    move_action = (diffusion_choice[:, :, 1:] == choice) * self.not_barrier_matrix[:, :, :-1]
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, 1:] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, :-1] += move_action
+                    move_action = (diffusion_choice[:, :, :, 1:] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_front
+                    self.voxel_matrix[:, :, :, 1:] -= move_action
+                    self.voxel_matrix[:, :, :, :-1] += move_action
+                    continue
+                
                 if choice % (2*self.ndim) == 5:
-                    move_action = (diffusion_choice[:, :, :-1] == choice) * self.not_barrier_matrix[:,  :, 1:]
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, :-1] -= move_action
-                    self.voxel_matrix[choice//(2*self.ndim), :, :, 1:] += move_action
-            
+                    if self.ndim == 3:
+                        move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_back * (diffusion_choice[:, :, :, :-1] > 0)
+                    else: # does not really happen
+                        move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_back
+                    self.voxel_matrix[:, :, :, :-1] -= move_action
+                    self.voxel_matrix[:, :, :, 1:] += move_action
+                    continue
+                                
+    
+        # React part
         if self.reaction_set is not None:
-            for choice in range(self.num_reaction):
-                # print(self.voxel_matrix.shape, self.reaction_matrix_list[choice].shape, no_diffusion_voxel.shape, reaction_choice.shape)
-                self.voxel_matrix += self.reaction_matrix_list[choice] * no_diffusion_voxel * (reaction_choice == choice)
+            
+            for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
+                
+                if len(reagent) == 2:
+                    reaction_voxel = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
+                if len(reagent) == 1:
+                    reaction_voxel = 1 - np.exp(-np.prod(self.voxel_matrix[reagent], axis=0) * coeff * t_step)
+                
+                random_sampling = np.random.random(self.true_sides)
+                self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling < reaction_voxel)
                     
         self.cumulative_t += t_step
         self.t_trace.append(self.cumulative_t)
