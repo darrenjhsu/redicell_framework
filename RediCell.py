@@ -155,8 +155,8 @@ class RediCell:
             print('No reactions')
     
     def determine_maximum_timestep(self):
-        print(f'Max time step is {1 / np.max(self.diffusion_vector/2/self.ndim) / 4 / self.voxel_matrix.max() :.2e} s (max {self.voxel_matrix.max()} particles in voxel)')
-        return 1 / np.max(self.diffusion_vector/2/self.ndim) / 4 / self.voxel_matrix.max()
+        print(f'Max time step is {1 / np.max(np.array(self.diffusion_vector)/2/self.ndim) / 4 / self.voxel_matrix.max() :.2e} s (max {self.voxel_matrix.max()} particles in voxel)')
+        return 1 / np.max(np.array(self.diffusion_vector)/2/self.ndim) / 4 / self.voxel_matrix.max()
         
     def add_molecules(self, molecule_type, molecule_count):
         self.molecule_count[molecule_type] = molecule_count
