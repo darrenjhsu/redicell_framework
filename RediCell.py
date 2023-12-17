@@ -14,7 +14,7 @@ class RediCell:
             self.molecule_types = molecule_types.molecule_types
             self.molecule_names = molecule_types.molecule_names
             self.molecule_observed_barrier_types = molecule_types.molecule_observed_barrier_types
-            # self.molecule_diffusion_coefficients = molecule_types.molecule_diffusion_coefficients
+            self.molecule_special_diffusion_coefficients = molecule_types.molecule_special_diffusion_coefficients
         elif isinstance(molecule_types, list):
             raise
         else:
@@ -52,9 +52,14 @@ class RediCell:
         self.mesh = np.meshgrid(*self.side_coord)
         # Barrier types: -1 = no barrier, 0 = surrounding wall, 1 -> N = custom
         self.barrier_type = np.zeros(self.true_sides).astype(int) - 1
+        # Barrier types: 0 = default (diffusion the same everywhere), 1 -> N = custom defined locations
+        self.special_space_type = np.zeros(self.true_sides).astype(int)
 
         self.reaction_set = reaction_set
-        self.num_reaction = len(self.reaction_set.reaction)
+        if self.reaction_set is not None:
+            self.num_reaction = len(self.reaction_set.reaction)
+        else:
+            self.num_reaction = 0
     
     def partition(self):
         # m, x, y matrix
@@ -62,7 +67,7 @@ class RediCell:
         self.voxel_matrix_shape = self.voxel_matrix.shape
         
         self.construct_possible_actions()
-        print(f'Diffusion vector is {self.diffusion_vector}')
+        # print(f'Diffusion vector is {self.diffusion_vector}')
         
         # self.diffusion_matrix = np.tile(np.expand_dims(self.diffusion_vector, tuple(range(1, self.ndim+1))), 
         #                                            (1, *self.voxel_matrix.shape[1:]))
@@ -78,7 +83,7 @@ class RediCell:
 
         #self.edit_action_vector()
 
-        self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
+            self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
     
     def set_border_wall(self): 
         if self.ndim >= 1:
@@ -165,7 +170,16 @@ class RediCell:
         self.reaction_vector_list = []
         self.reaction_coefficients = []
         for mol in self.molecule_types:
-            self.diffusion_vector.append(self.ndim * 2 * mol.diffusion_coefficient / self.spacing**2) 
+            if mol.special_diffusion_coefficients is None:
+                self.diffusion_vector.append(self.ndim * 2 * mol.diffusion_coefficient / self.spacing**2) 
+            else: # there is special diffusion coefficients, process it
+                # Base diffusion
+                diffusion_matrix = np.ones(self.true_sides) * self.ndim * 2 * mol.diffusion_coefficient / self.spacing**2
+                # Special diffusions
+                for key in mol.special_diffusion_coefficients.keys():
+                    print("Do special diffusion")
+                    diffusion_matrix[self.special_space_type == key] = self.ndim * 2 * mol.special_diffusion_coefficients[key] / self.spacing**2
+                self.diffusion_vector.append(diffusion_matrix)
         
         if self.reaction_set is not None:
             for reaction in self.reaction_set.reaction:
@@ -389,17 +403,18 @@ class MoleculeSet:
         self.molecule_types = list(molecule)
         self.molecule_names = [mol.molecule_name for mol in self.molecule_types]
         self.molecule_observed_barrier_types = [mol.observed_barrier_types for mol in self.molecule_types]
+        self.molecule_special_diffusion_coefficients = [mol.special_diffusion_coefficients for mol in self.molecule_types]
         
     def add_molecule(self, molecule):
         assert molecule.molecule_name not in self.molecule_names
         self.molecule_types.append(molecule)
         
 class Molecule:
-    def __init__(self, molecule_name, diffusion_coefficient, observed_barrier_types=None):
+    def __init__(self, molecule_name, diffusion_coefficient, observed_barrier_types=None, special_diffusion_coefficients=None):
         # diffusion_coefficient in m^2 / s, so a value like 1e-13 m^2/s is likely
         self.molecule_name = molecule_name
-        # This can be a number or a dictionary. 
-        # If a dictionary then it has to match the name of regions (WIP)
+
+        # The default diffusion coefficient for everywhere
         self.diffusion_coefficient = diffusion_coefficient
         
         # Should be an integer or a list of positive integers. If None then observes only full-system barriers (type 0)
@@ -411,6 +426,13 @@ class Molecule:
             self.observed_barrier_types = [0]
         else:
             raise
+
+        # Extra diffusion coefficients
+        # A dictionary with special space types
+        if not isinstance(special_diffusion_coefficients, dict):
+            raise
+        self.special_diffusion_coefficients = special_diffusion_coefficients
+        
             
 class ReactionSet:
     def __init__(self):
