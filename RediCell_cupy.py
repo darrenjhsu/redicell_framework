@@ -45,7 +45,7 @@ class RediCell_CuPy:
         self.num_reaction = 0
 
         print(self.true_sides)
-        self.side_coord = [np.linspace(0, int(side) * self.spacing, int(side)+1) for side in self.true_sides]
+        self.side_coord = [np.linspace(0, int(side) * self.spacing, int(side)) for side in self.true_sides]
         self.mesh = np.meshgrid(*self.side_coord)
     
     def partition(self):

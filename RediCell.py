@@ -1,9 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import time
 
 class RediCell:
-    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, wall=True):
+    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True):
         # sides in number of voxels
         # spacing in m
         # "wall" adds one extra cell each direction, set as barrier
@@ -12,9 +13,14 @@ class RediCell:
         if isinstance(molecule_types, MoleculeSet):
             self.molecule_types = molecule_types.molecule_types
             self.molecule_names = molecule_types.molecule_names
-        if isinstance(molecule_types, list):
-            self.molecule_types = molecule_types
-            self.molecule_names = [mol.molecule_name for mol in self.molecule_types]
+            self.molecule_observed_barrier_types = molecule_types.molecule_observed_barrier_types
+            # self.molecule_diffusion_coefficients = molecule_types.molecule_diffusion_coefficients
+        elif isinstance(molecule_types, list):
+            raise
+        else:
+            raise
+        #     self.molecule_types = molecule_types
+        #     self.molecule_names = [mol.molecule_name for mol in self.molecule_types]
         self.num_types = len(self.molecule_types)
         self.mol_to_id = {mol.molecule_name: idx for idx, mol in enumerate(self.molecule_types)}
         self.id_to_mol = {idx: mol.molecule_name for idx, mol in enumerate(self.molecule_types)}
@@ -42,8 +48,13 @@ class RediCell:
         self.reaction_set = None
         self.num_reaction = 0
     
-        self.side_coord = [np.linspace(0, side * self.spacing, side+1) for side in self.true_sides]
+        self.side_coord = [np.linspace(0, side * self.spacing, side) for side in self.true_sides]
         self.mesh = np.meshgrid(*self.side_coord)
+        # Barrier types: -1 = no barrier, 0 = surrounding wall, 1 -> N = custom
+        self.barrier_type = np.zeros(self.true_sides).astype(int) - 1
+
+        self.reaction_set = reaction_set
+        self.num_reaction = len(self.reaction_set.reaction)
     
     def partition(self):
         # m, x, y matrix
@@ -65,27 +76,50 @@ class RediCell:
                                                        (1, *self.voxel_matrix.shape[1:])).astype(np.float32)
                                          for x in self.reaction_vector_list]
 
-        if self.wall:
-            self.set_border_wall()
         #self.edit_action_vector()
 
         self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
     
-    def set_border_wall(self, propagate=False): 
-        if not propagate:
-            # just build wall
-            self.not_barrier_matrix = np.ones(self.voxel_matrix_shape).astype(bool)
-            if self.ndim >= 1:
-                self.not_barrier_matrix[:, 0] = 0
-                self.not_barrier_matrix[:, -1] = 0
-            if self.ndim >= 2:
-                self.not_barrier_matrix[:, :, 0] = 0
-                self.not_barrier_matrix[:, :, -1] = 0
-            if self.ndim >= 3:
-                self.not_barrier_matrix[:, :, :, 0] = 0
-                self.not_barrier_matrix[:, :, :, -1] = 0 
-        else:
-            self.not_barrier_matrix = np.repeat(np.expand_dims(self.not_barrier_matrix, axis=0), self.num_types, axis=0)
+    def set_border_wall(self): 
+        if self.ndim >= 1:
+            self.barrier_type[0] = 0
+            self.barrier_type[-1] = 0
+        if self.ndim >= 2:
+            self.barrier_type[:, 0] = 0
+            self.barrier_type[:, -1] = 0
+        if self.ndim >= 3:
+            self.barrier_type[:, :, 0] = 0
+            self.barrier_type[:, :, -1] = 0
+        
+
+    def add_barrier(self, voxel_list=None, barrier_type_index=None):
+        if voxel_list is None or barrier_type_index is None:
+            print('Either voxel_list or barrier_type_index is not set. (Nothing done)')
+            return
+        if barrier_type_index == 0:
+            print('Barrier type index 0 is reserved for full-system border wall. Use an integer >= 1. (Nothing done)')
+            return
+        if isinstance(voxel_list, tuple):
+            self.barrier_type[voxel_list] = barrier_type_index
+            # print(f'Set voxel {voxel_list} barrier to {barrier_type_index}')
+        if isinstance(voxel_list, list):
+            for v in voxel_list:
+                self.barrier_type[v] = barrier_type_index
+                # print(f'Set voxel {v} barrier to {barrier_type_index}')
+
+    def configure_barrier(self):
+
+        # Build border wall
+        if self.wall:
+            self.set_border_wall()
+
+        self.not_barrier_matrix = np.ones(self.voxel_matrix_shape).astype(bool)
+
+        for idx, mobt in enumerate(self.molecule_observed_barrier_types):
+            # mobt is molecule observed barrier types
+            for obt in mobt:
+                self.not_barrier_matrix[idx, self.barrier_type == obt] = 0
+                
 
         if self.ndim >= 1:
             self.not_barrier_matrix_up = self.not_barrier_matrix[:, :-1]
@@ -97,14 +131,16 @@ class RediCell:
             self.not_barrier_matrix_front = self.not_barrier_matrix[:, :, :, :-1]
             self.not_barrier_matrix_back = self.not_barrier_matrix[:, :, :, 1:]
             
-        self.not_barrier_matrix = self.not_barrier_matrix[0]      
     
-    def propagate_barrier(self):
-        # Propagate the not_barrier_matrix to other dimensions
-        self.set_border_wall(propagate=True)
+    # def propagate_barrier(self):
+    #     # Propagate the not_barrier_matrix to other dimensions
+    #     self.set_border_wall(propagate=True)
         
     def plot_wall(self):
-        plt.imshow(self.not_barrier_matrix, cmap='Oranges_r', vmax=1, vmin=0)
+        assert self.ndim == 2
+        my_cmap = cm.get_cmap('tab10')
+        my_cmap.set_under('w')
+        plt.imshow(self.barrier_type, cmap=my_cmap, vmin=0)
         
     def initialize(self):
         assert self.initialized == False
@@ -114,7 +150,7 @@ class RediCell:
         # Calculate largest possible timestep
         self.initialized = True
 
-    def add_reaction_set(self, reaction_set=None):
+    def replace_reaction_set(self, reaction_set=None):
         self.reaction_set = reaction_set
         self.num_reaction = len(self.reaction_set.reaction)
     
@@ -281,7 +317,7 @@ class RediCell:
             mol_type = [mol_type]
         if wall:
             # plot wall 
-            barrier_present = np.where(1 - self.not_barrier_matrix)
+            barrier_present = self.barrier_type >= 0
             barrier_location = [self.mesh[x][barrier_present] for x in range(self.ndim)]
             plt.scatter(barrier_location[0], barrier_location[1], s = 25, c = 'gray', marker='s')
         for idx, mol in enumerate(mol_type):
@@ -295,8 +331,8 @@ class RediCell:
                 plt.scatter(particle_location[0], particle_location[1], s=3)
             else:
                 plt.scatter(particle_location[0], particle_location[1], s=9, marker='x')
-        plt.xlim([-0.5 * self.spacing, (self.true_sides[0]-0.5)*self.spacing])
-        plt.ylim([-0.5 * self.spacing, (self.true_sides[1]-0.5)*self.spacing])
+        plt.xlim([-0.5 * self.spacing, (self.true_sides[0]+0.5)*self.spacing])
+        plt.ylim([-0.5 * self.spacing, (self.true_sides[1]+0.5)*self.spacing])
         plt.gca().invert_yaxis()
         plt.title(f't = {self.cumulative_t:.3e} s')
         plt.grid(alpha=0.3)
@@ -309,7 +345,7 @@ class RediCell:
             mol_type = [mol_type]
         if wall:
             # plot wall 
-            barrier_present = np.where(1 - self.not_barrier_matrix)
+            barrier_present = self.barrier_type >= 0
             barrier_location = [self.mesh[x][barrier_present] for x in range(self.ndim)]
             ax.scatter(barrier_location[0], barrier_location[1], barrier_location[2], s = 25, c = 'gray', marker='s')
         for idx, mol in enumerate(mol_type):
@@ -352,17 +388,30 @@ class MoleculeSet:
     def __init__(self, molecule=[]):
         self.molecule_types = list(molecule)
         self.molecule_names = [mol.molecule_name for mol in self.molecule_types]
+        self.molecule_observed_barrier_types = [mol.observed_barrier_types for mol in self.molecule_types]
         
     def add_molecule(self, molecule):
         assert molecule.molecule_name not in self.molecule_names
         self.molecule_types.append(molecule)
         
 class Molecule:
-    def __init__(self, molecule_name, diffusion_coefficient):
+    def __init__(self, molecule_name, diffusion_coefficient, observed_barrier_types=None):
         # diffusion_coefficient in m^2 / s, so a value like 1e-13 m^2/s is likely
         self.molecule_name = molecule_name
+        # This can be a number or a dictionary. 
+        # If a dictionary then it has to match the name of regions (WIP)
         self.diffusion_coefficient = diffusion_coefficient
-
+        
+        # Should be an integer or a list of positive integers. If None then observes only full-system barriers (type 0)
+        if isinstance(observed_barrier_types, int):
+            self.observed_barrier_types = [0, observed_barrier_types]
+        elif isinstance(observed_barrier_types, list):
+            self.observed_barrier_types = [0] + observed_barrier_types
+        elif observed_barrier_types is None:
+            self.observed_barrier_types = [0]
+        else:
+            raise
+            
 class ReactionSet:
     def __init__(self):
         self.reaction = []
