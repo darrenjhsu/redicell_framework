@@ -9,6 +9,7 @@ class RediCell:
         # spacing in m
         # "wall" adds one extra cell each direction, set as barrier
         self.spacing = spacing
+        self.one_per_voxel_equal_um = 1.0 / self.spacing**3 / 6.023e23 / 1000 * 1e6
         # Should be a list of Molecule instances
         if isinstance(molecule_types, MoleculeSet):
             self.molecule_types = molecule_types.molecule_types
@@ -60,6 +61,8 @@ class RediCell:
             self.num_reaction = len(self.reaction_set.reaction)
         else:
             self.num_reaction = 0
+
+        self.external_conditions = []
     
     def partition(self):
         # m, x, y matrix
@@ -213,8 +216,54 @@ class RediCell:
         # distribute molecules randomly
         pass
 
+    def add_external_conditions(self, region, molecule, concentration):
+        # region is a space type index or a region specified by ones in a matrix same shape as self.true_sides
+        # molecule is a Molecule object
+        # concentration is a float in micromolar
+        assert molecule in self.molecule_types
+        
+        if isinstance(region, int):
+            assert region in self.special_space_type
+            real_region = self.special_space_type == region
+        elif np.all(region.shape == self.true_sides):
+            real_region = region > 0
+        else:
+            raise("region has to be either an existing space type, or a matrix with same shape as RediCell.true_sides")
+        num_molecule = int(np.round(concentration / self.one_per_voxel_equal_um * real_region.sum()))
+        region_voxel = np.where(real_region)
+        self.external_conditions.append([real_region, self.mol_to_id[molecule.molecule_name], concentration, num_molecule])
+    
+    def show_external_conditions(self):
+        for row in self.external_conditions:
+            print(f'Maintain {row[2]} micromolar of {self.id_to_mol[row[1]]} within a space of {row[0].sum()} voxels ({row[3]} molecules)')
+    
     def maintain_external_conditions(self):
-        pass
+        for row in self.external_conditions:
+            if row[2] == 0:
+                # Just remove everything in it
+                self.voxel_matrix[row[1], row[0]] = 0
+                # print('emptied region')
+            else:
+                current = int(self.voxel_matrix[row[1], row[0]].sum())
+                change = row[3] - current
+                if change > 0:
+                    candidates = np.where(row[0])
+                    choices = np.random.choice(len(candidates[0]), change, replace=False)
+                    selections = [x[choices] for x in candidates]
+                    if self.ndim == 2:
+                        self.voxel_matrix[0, selections[0], selections[1]] += 1
+                    if self.ndim == 3:
+                        self.voxel_matrix[0, selections[0], selections[1], selections[2]] += 1
+                    # print(f'Added {change} molecules')
+                elif change < 0:
+                    candidates = np.where((self.voxel_matrix[row[1]] * row[0]) == 1)
+                    choices = np.random.choice(len(candidates[0]), -change, replace=False)
+                    selections = [x[choices] for x in candidates]
+                    if self.ndim == 2:
+                        self.voxel_matrix[0, selections[0], selections[1]] -= 1
+                    if self.ndim == 3:
+                        self.voxel_matrix[0, selections[0], selections[1], selections[2]] -= 1
+                    # print(f'Deleted {change} molecules')
 
     # @profile
     def react_diffuse(self, t_step):
@@ -429,7 +478,7 @@ class Molecule:
 
         # Extra diffusion coefficients
         # A dictionary with special space types
-        if not isinstance(special_diffusion_coefficients, dict):
+        if special_diffusion_coefficients is not None and not isinstance(special_diffusion_coefficients, dict):
             raise
         self.special_diffusion_coefficients = special_diffusion_coefficients
         
