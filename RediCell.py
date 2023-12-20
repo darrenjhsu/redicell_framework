@@ -2,13 +2,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import time
+from DesignTool import *
 
 class RediCell:
-    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True):
+    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True, design=None):
         # sides in number of voxels
         # spacing in m
         # "wall" adds one extra cell each direction, set as barrier
-        self.spacing = spacing
+        if design is not None:
+            self.spacing = design.spacing
+            self.wall = design.wall
+            self.sides = design.sides.copy()
+            self.ndim = design.ndim
+        else:
+            assert len(sides) > 0 and len(sides) < 4
+            self.spacing = spacing
+            self.wall = wall
+            self.sides = np.array(sides).astype(int) # Should be [32, 32] or [32, 32, 32]
+            self.ndim = len(self.sides)
         self.one_per_voxel_equal_um = 1.0 / self.spacing**3 / 6.023e23 / 1000 * 1e6
         # Should be a list of Molecule instances
         if isinstance(molecule_types, MoleculeSet):
@@ -25,12 +36,10 @@ class RediCell:
         self.num_types = len(self.molecule_types)
         self.mol_to_id = {mol.molecule_name: idx for idx, mol in enumerate(self.molecule_types)}
         self.id_to_mol = {idx: mol.molecule_name for idx, mol in enumerate(self.molecule_types)}
-        self.wall = wall
+        
         self.initialized = False
         self.voxel_matrix = []
-        assert len(sides) > 0 and len(sides) < 4
-        self.ndim = len(sides)
-        self.sides = np.array(sides).astype(int) # Should be [32, 32] or [32, 32, 32]
+        
         
         if self.wall:
             self.true_sides = self.sides + 2
@@ -50,11 +59,18 @@ class RediCell:
         self.num_reaction = 0
     
         self.side_coord = [np.linspace(0, side * self.spacing, side) for side in self.true_sides]
-        self.mesh = np.meshgrid(*self.side_coord)
-        # Barrier types: -1 = no barrier, 0 = surrounding wall, 1 -> N = custom
-        self.barrier_type = np.zeros(self.true_sides).astype(int) - 1
-        # Barrier types: 0 = default (diffusion the same everywhere), 1 -> N = custom defined locations
-        self.special_space_type = np.zeros(self.true_sides).astype(int)
+        self.mesh = np.meshgrid(*self.side_coord, indexing='ij')
+
+        if design is not None:
+            # Barrier types: -1 = no barrier, 0 = surrounding wall, 1 -> N = custom
+            self.barrier_type = design.barrier_type.copy()
+            # Barrier types: 0 = default (diffusion the same everywhere), 1 -> N = custom defined locations
+            self.special_space_type = design.special_space_type.copy()
+        else:
+            # Barrier types: -1 = no barrier, 0 = surrounding wall, 1 -> N = custom
+            self.barrier_type = np.zeros(self.true_sides).astype(int) - 1
+            # Barrier types: 0 = default (diffusion the same everywhere), 1 -> N = custom defined locations
+            self.special_space_type = np.zeros(self.true_sides).astype(int)
 
         self.reaction_set = reaction_set
         if self.reaction_set is not None:
@@ -251,18 +267,18 @@ class RediCell:
                     choices = np.random.choice(len(candidates[0]), change, replace=False)
                     selections = [x[choices] for x in candidates]
                     if self.ndim == 2:
-                        self.voxel_matrix[0, selections[0], selections[1]] += 1
+                        self.voxel_matrix[row[1], selections[0], selections[1]] += 1
                     if self.ndim == 3:
-                        self.voxel_matrix[0, selections[0], selections[1], selections[2]] += 1
+                        self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] += 1
                     # print(f'Added {change} molecules')
                 elif change < 0:
                     candidates = np.where((self.voxel_matrix[row[1]] * row[0]) == 1)
                     choices = np.random.choice(len(candidates[0]), -change, replace=False)
                     selections = [x[choices] for x in candidates]
                     if self.ndim == 2:
-                        self.voxel_matrix[0, selections[0], selections[1]] -= 1
+                        self.voxel_matrix[row[1], selections[0], selections[1]] -= 1
                     if self.ndim == 3:
-                        self.voxel_matrix[0, selections[0], selections[1], selections[2]] -= 1
+                        self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] -= 1
                     # print(f'Deleted {change} molecules')
 
     # @profile
@@ -418,10 +434,12 @@ class RediCell:
                                  for x in range(self.ndim)])
             # randomize location a bit
             particle_location += (np.random.random(size=particle_location.shape) - 0.5) * self.spacing * 0.5
-            if idx < 2:
-                ax.scatter(particle_location[0], particle_location[1], particle_location[2], s=3)
-            else:
-                ax.scatter(particle_location[0], particle_location[1], particle_location[2], s=9, marker='x')    
+            # if idx < 2:
+            ax.scatter(particle_location[0], particle_location[1], particle_location[2], s=2)
+            # else:
+            #     ax.scatter(particle_location[0], particle_location[1], particle_location[2], s=9, marker='x')    
+        xs, ys, zs = [self.mesh[x] for x in range(self.ndim)]
+        ax.set_box_aspect((np.ptp(xs), np.ptp(ys), np.ptp(zs)))
         ax.set_xlim([-0.5 * self.spacing, (self.true_sides[0]-0.5)*self.spacing])
         ax.set_ylim([-0.5 * self.spacing, (self.true_sides[1]-0.5)*self.spacing])
         ax.set_zlim([-0.5 * self.spacing, (self.true_sides[2]-0.5)*self.spacing])
@@ -490,4 +508,5 @@ class ReactionSet:
         # reagent can be [typeA, typeB] for bimolecular reaction
         # or [typeA] or typeA for unimolecular reaction
         self.reaction.append([reagent, product, reaction_coefficient])
-        
+
+
