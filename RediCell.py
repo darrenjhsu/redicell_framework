@@ -432,23 +432,6 @@ class RediCell:
         plt.grid(alpha=0.3)
         plt.show()
 
-class Voxel:
-    def __init__(self, molecule_count=[], spacing=None, is_barrier=False, action_vector=None):
-        self.molecule_count = molecule_count
-        self.is_barrier = is_barrier
-        self.spacing = spacing
-        self.action_vector = action_vector
-    def add_molecule(self, molecule_type, molecule_count):
-        self.molecule_count[molecule_type] += molecule_count
-    def set_molecule(self, molecule_type, molecule_count):
-        self.molecule_count[molecule_type] = molecule_count
-    def compute_transition_vector(self, t):
-        return np.pad(np.cumsum(np.repeat(self.molecule_count, 4) * self.action_vector * t), (0, 1), constant_values=1)
-    def determine_action(self, t):
-        transition_vector = self.compute_transition_vector(t)
-        if np.sum(transition_vector[-2]) > 1:
-            print('Warning: transition probability > 1')
-        return np.argmax(np.random.random() < transition_vector)
 
 class MoleculeSet:
     def __init__(self, molecule=[]):

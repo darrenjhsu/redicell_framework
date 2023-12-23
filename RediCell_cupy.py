@@ -5,14 +5,14 @@ import nvtx
 
 class RediCell_CuPy:
     
-        def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True, design=None):
+    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True, design=None):
         # sides in number of voxels
         # spacing in m
         # "wall" adds one extra cell each direction, set as barrier
         if design is not None:
             self.spacing = design.spacing
             self.wall = design.wall
-            self.sides = cp.array(design.sides)
+            self.sides = np.array(design.sides).astype(int)
             self.ndim = design.ndim
         else:
             assert len(sides) > 0 and len(sides) < 4
@@ -58,7 +58,7 @@ class RediCell_CuPy:
         self.num_reaction = 0
 
         self.side_coord = [cp.linspace(0, int(side) * self.spacing, int(side)) for side in self.true_sides]
-        self.mesh = cp.meshgrid(*self.side_coord)
+        self.mesh = cp.meshgrid(*self.side_coord, indexing='ij')
 
         if design is not None:
             # Barrier types: -1 = no barrier, 0 = surrounding wall, 1 -> N = custom
@@ -95,16 +95,15 @@ class RediCell_CuPy:
             self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
 
     def set_border_wall(self, propagate=False): 
-    
         if self.ndim >= 1:
-            self.not_barrier_matrix[:, 0] = 0
-            self.not_barrier_matrix[:, -1] = 0
+            self.barrier_type[0] = 0
+            self.barrier_type[-1] = 0
         if self.ndim >= 2:
-            self.not_barrier_matrix[:, :, 0] = 0
-            self.not_barrier_matrix[:, :, -1] = 0
+            self.barrier_type[:, 0] = 0
+            self.barrier_type[:, -1] = 0
         if self.ndim >= 3:
-            self.not_barrier_matrix[:, :, :, 0] = 0
-            self.not_barrier_matrix[:, :, :, -1] = 0 
+            self.barrier_type[:, :, 0] = 0
+            self.barrier_type[:, :, -1] = 0
 
     def add_barrier(self, voxel_list=None, barrier_type_index=None):
         if voxel_list is None or barrier_type_index is None:
@@ -225,11 +224,11 @@ class RediCell_CuPy:
             assert region in self.special_space_type
             real_region = self.special_space_type == region
         elif np.all(region.shape == self.true_sides):
-            real_region = region > 0
+            real_region = cp.array(region > 0)
         else:
             raise("region has to be either an existing space type, or a matrix with same shape as RediCell.true_sides")
         num_molecule = int(np.round(concentration / self.one_per_voxel_equal_um * real_region.sum()))
-        region_voxel = np.where(real_region)
+        region_voxel = cp.where(real_region)
         self.external_conditions.append([real_region, self.mol_to_id[molecule.molecule_name], concentration, num_molecule])
     
     def show_external_conditions(self):
@@ -391,12 +390,12 @@ class RediCell_CuPy:
         if wall:
             # plot wall 
             barrier_present = self.barrier_type >= 0
-            barrier_location = [self.mesh[x].get()[barrier_present.get()] for x in range(self.ndim)]
+            barrier_location = [self.mesh[x][barrier_present.get()].get() for x in range(self.ndim)]
             plt.scatter(barrier_location[0], barrier_location[1], s = 25, c = 'gray', marker='s')
         for mol in mol_type:
             idx = self.mol_to_id[mol]
-            particles_present = cp.where(self.voxel_matrix[idx] > 0).get()
-            particle_number = self.voxel_matrix[idx].get()[particles_present].astype(int)
+            particles_present = np.where(self.voxel_matrix[idx].get() > 0)
+            particle_number = self.voxel_matrix[idx][particles_present].get().astype(int)
             particle_location = np.array([np.repeat(self.mesh[x].get()[particles_present], particle_number) 
                                  for x in range(self.ndim)])
             # randomize location a bit
@@ -420,13 +419,13 @@ class RediCell_CuPy:
         if wall:
             # plot wall 
             barrier_present = self.barrier_type >= 0
-            barrier_location = [self.mesh[x].get()[barrier_present.get()] for x in range(self.ndim)]
+            barrier_location = [self.mesh[x][barrier_present.get()].get() for x in range(self.ndim)]
             ax.scatter(barrier_location[0], barrier_location[1], barrier_location[2], s = 25, c = 'gray', marker='s')
         for mol in mol_type:
             idx = self.mol_to_id[mol]
-            particles_present = cp.where(self.voxel_matrix[idx] > 0).get()
-            particle_number = self.voxel_matrix[idx].get()[particles_present].astype(int)
-            particle_location = np.array([np.repeat(self.mesh[x].get()[particles_present], particle_number) 
+            particles_present = np.where(self.voxel_matrix[idx].get() > 0)
+            particle_number = self.voxel_matrix[idx][particles_present].get().astype(int)
+            particle_location = np.array([np.repeat(self.mesh[x][particles_present].get(), particle_number) 
                                  for x in range(self.ndim)])
             # randomize location a bit
             particle_location += (np.random.random(size=particle_location.shape) - 0.5) * self.spacing * 0.5
@@ -442,24 +441,6 @@ class RediCell_CuPy:
         plt.title(f't = {self.cumulative_t:.3e} s')
         plt.grid(alpha=0.3)
         plt.show()
-
-class Voxel:
-    def __init__(self, molecule_count=[], spacing=None, is_barrier=False, action_vector=None):
-        self.molecule_count = molecule_count
-        self.is_barrier = is_barrier
-        self.spacing = spacing
-        self.action_vector = action_vector
-    def add_molecule(self, molecule_type, molecule_count):
-        self.molecule_count[molecule_type] += molecule_count
-    def set_molecule(self, molecule_type, molecule_count):
-        self.molecule_count[molecule_type] = molecule_count
-    def compute_transition_vector(self, t):
-        return np.pad(np.cumsum(np.repeat(self.molecule_count, 4) * self.action_vector * t), (0, 1), constant_values=1)
-    def determine_action(self, t):
-        transition_vector = self.compute_transition_vector(t)
-        if np.sum(transition_vector[-2]) > 1:
-            print('Warning: transition probability > 1')
-        return np.argmax(np.random.random() < transition_vector)
 
 class MoleculeSet:
     def __init__(self, molecule=[]):
