@@ -31,8 +31,7 @@ class RediCell:
             raise
         else:
             raise
-        #     self.molecule_types = molecule_types
-        #     self.molecule_names = [mol.molecule_name for mol in self.molecule_types]
+
         self.num_types = len(self.molecule_types)
         self.mol_to_id = {mol.molecule_name: idx for idx, mol in enumerate(self.molecule_types)}
         self.id_to_mol = {idx: mol.molecule_name for idx, mol in enumerate(self.molecule_types)}
@@ -86,21 +85,13 @@ class RediCell:
         self.voxel_matrix_shape = self.voxel_matrix.shape
         
         self.construct_possible_actions()
-        # print(f'Diffusion vector is {self.diffusion_vector}')
         
-        # self.diffusion_matrix = np.tile(np.expand_dims(self.diffusion_vector, tuple(range(1, self.ndim+1))), 
-        #                                            (1, *self.voxel_matrix.shape[1:]))
         
         if self.reaction_set is not None:
-            # self.reagent_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
-            #                                            (1, *self.voxel_matrix.shape[1:])) 
-            #                              for x in self.reagent_vector_list]
-
+        
             self.reaction_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
                                                        (1, *self.voxel_matrix.shape[1:])).astype(np.float32)
                                          for x in self.reaction_vector_list]
-
-        #self.edit_action_vector()
 
             self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
     
@@ -125,11 +116,9 @@ class RediCell:
             return
         if isinstance(voxel_list, tuple):
             self.barrier_type[voxel_list] = barrier_type_index
-            # print(f'Set voxel {voxel_list} barrier to {barrier_type_index}')
         if isinstance(voxel_list, list):
             for v in voxel_list:
                 self.barrier_type[v] = barrier_type_index
-                # print(f'Set voxel {v} barrier to {barrier_type_index}')
 
     def configure_barrier(self):
 
@@ -143,7 +132,6 @@ class RediCell:
             # mobt is molecule observed barrier types
             for obt in mobt:
                 self.not_barrier_matrix[idx, self.barrier_type == obt] = 0
-                
 
         if self.ndim >= 1:
             self.not_barrier_matrix_up = self.not_barrier_matrix[:, :-1]
@@ -154,12 +142,7 @@ class RediCell:
         if self.ndim >= 3:
             self.not_barrier_matrix_front = self.not_barrier_matrix[:, :, :, :-1]
             self.not_barrier_matrix_back = self.not_barrier_matrix[:, :, :, 1:]
-            
-    
-    # def propagate_barrier(self):
-    #     # Propagate the not_barrier_matrix to other dimensions
-    #     self.set_border_wall(propagate=True)
-        
+
     def plot_wall(self):
         assert self.ndim == 2
         my_cmap = cm.get_cmap('tab10')
@@ -212,7 +195,7 @@ class RediCell:
                 self.reagent_vector_list.append(reagent_vector)
                 self.reaction_vector_list.append(reaction_vector.astype(int))
                 self.reaction_coefficients.append(reaction[2])
-            print(self.reagent_vector_list)
+            print('Reagent list:', self.reagent_vector_list)
         
         print('Action list:')
         for mol in self.molecule_types:
@@ -399,7 +382,8 @@ class RediCell:
             barrier_present = self.barrier_type >= 0
             barrier_location = [self.mesh[x][barrier_present] for x in range(self.ndim)]
             plt.scatter(barrier_location[0], barrier_location[1], s = 25, c = 'gray', marker='s')
-        for idx, mol in enumerate(mol_type):
+        for mol in mol_type:
+            idx = self.mol_to_id[mol]
             particles_present = np.where(self.voxel_matrix[idx] > 0)
             particle_number = self.voxel_matrix[idx][particles_present].astype(int)
             particle_location = np.array([np.repeat(self.mesh[x][particles_present], particle_number) 
@@ -427,7 +411,8 @@ class RediCell:
             barrier_present = self.barrier_type >= 0
             barrier_location = [self.mesh[x][barrier_present] for x in range(self.ndim)]
             ax.scatter(barrier_location[0], barrier_location[1], barrier_location[2], s = 25, c = 'gray', marker='s')
-        for idx, mol in enumerate(mol_type):
+        for mol in mol_type:
+            idx = self.mol_to_id[mol]
             particles_present = np.where(self.voxel_matrix[idx] > 0)
             particle_number = self.voxel_matrix[idx][particles_present].astype(int)
             particle_location = np.array([np.repeat(self.mesh[x][particles_present], particle_number) 
