@@ -2,6 +2,7 @@ import cupy as cp, numpy as np
 import matplotlib.pyplot as plt
 import time
 import nvtx
+from tqdm import tqdm
 
 class RediCell_CuPy:
     
@@ -18,7 +19,7 @@ class RediCell_CuPy:
             assert len(sides) > 0 and len(sides) < 4
             self.spacing = spacing
             self.wall = wall
-            self.sides = cp.array(sides).astype(int) # Should be [32, 32] or [32, 32, 32]
+            self.sides = np.array(sides).astype(int) # Should be [32, 32] or [32, 32, 32]
             self.ndim = len(self.sides)
         self.one_per_voxel_equal_um = 1.0 / self.spacing**3 / 6.023e23 / 1000 * 1e6
         # Should be a list of Molecule instances
@@ -81,15 +82,15 @@ class RediCell_CuPy:
 
     def partition(self):
         # m, x, y matrix
-        self.voxel_matrix = cp.zeros((self.num_types, *self.true_sides)).astype(cp.float32)
+        self.voxel_matrix = cp.zeros((self.num_types, *self.true_sides)).astype(cp.float16)
         self.voxel_matrix_shape = self.voxel_matrix.shape
 
         self.construct_possible_actions()
         
         if self.reaction_set is not None:
         
-            self.reaction_matrix_list = [np.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
-                                                       (1, *self.true_sides[1:])).astype(np.float32)
+            self.reaction_matrix_list = [cp.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
+                                                       (1, *self.true_sides[1:])).astype(cp.float16)
                                          for x in self.reaction_vector_list]
 
             self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
@@ -234,106 +235,96 @@ class RediCell_CuPy:
     def show_external_conditions(self):
         for row in self.external_conditions:
             print(f'Maintain {row[2]} micromolar of {self.id_to_mol[row[1]]} within a space of {row[0].sum()} voxels ({row[3]} molecules)')
-    
+            
+    @nvtx.annotate("maintain_external_conditions()", color="purple")
     def maintain_external_conditions(self):
-        for row in self.external_conditions:
-            if row[2] == 0:
-                # Just remove everything in it
-                self.voxel_matrix[row[1], row[0]] = 0
-                # print('emptied region')
-            else:
-                current = int(self.voxel_matrix[row[1], row[0]].sum())
-                change = row[3] - current
-                if change > 0:
-                    candidates = cp.where(row[0])
-                    choices = cp.random.choice(len(candidates[0]), change, replace=False)
-                    selections = [x[choices] for x in candidates]
-                    if self.ndim == 2:
-                        self.voxel_matrix[row[1], selections[0], selections[1]] += 1
-                    if self.ndim == 3:
-                        self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] += 1
-                    # print(f'Added {change} molecules')
-                elif change < 0:
-                    candidates = cp.where((self.voxel_matrix[row[1]] * row[0]) == 1)
-                    choices = cp.random.choice(len(candidates[0]), -change, replace=False)
-                    selections = [x[choices] for x in candidates]
-                    if self.ndim == 2:
-                        self.voxel_matrix[row[1], selections[0], selections[1]] -= 1
-                    if self.ndim == 3:
-                        self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] -= 1
-                    # print(f'Deleted {change} molecules')
+            for row in self.external_conditions:
+                if row[2] == 0:
+                    # Just remove everything in it
+                    self.voxel_matrix[row[1], row[0]] = 0
+                    # print('emptied region')
+                else:
+                    with nvtx.annotate("sum", color="orange"):
+                        current = int(self.voxel_matrix[row[1], row[0]].sum())
+                        change = row[3] - current
+                        
+                    if change > 0:
+                        with nvtx.annotate("where", color="green"):
+                            candidates = cp.where(row[0])
+                        with nvtx.annotate("choice", color="green"):
+                            choices = cp.random.random(change) * len(candidates[0])
+                        with nvtx.annotate("select", color="green"):    
+                            selections = [x[choices.astype(cp.int32)] for x in candidates]
+                        with nvtx.annotate("apply", color="green"):
+                            if self.ndim == 2:
+                                self.voxel_matrix[row[1], selections[0], selections[1]] += 1
+                            if self.ndim == 3:
+                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] += 1
+                            # print(f'Added {change} molecules')
+                    elif change < 0:
+                        with nvtx.annotate("neg change", color="green"):
+                            candidates = cp.where((self.voxel_matrix[row[1]] * row[0]) == 1)
+                            choices = cp.random.random(-change) * len(candidates[0])
+                            selections = [x[choices.astype(cp.int32)] for x in candidates]
+                            if self.ndim == 2:
+                                self.voxel_matrix[row[1], selections[0], selections[1]] -= 1
+                            if self.ndim == 3:
+                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] -= 1
+                            # print(f'Deleted {change} molecules')
 
     @nvtx.annotate("react_diffuse()", color="purple")
     def react_diffuse(self, t_step, warning=True):
         with nvtx.annotate("diffuse", color="orange"):
-            diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float32)
-            random_choice = cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) * 2 * self.ndim + 1
-            random_sampling = cp.random.random(self.voxel_matrix_shape, dtype=cp.float32)
+            with nvtx.annotate("rand setup", color="orange"):
+                diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
+                random_choice = (cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) * 2 * self.ndim + 1).astype(cp.int16)
+                random_sampling = cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) / t_step
             for idx in range(self.num_types):
+                if isinstance(self.diffusion_vector[idx], float) and self.diffusion_vector[idx] == 0:
+                    continue
                 # Diffuse part
                 with nvtx.annotate("vox1", color="green"):    
-                    diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] * t_step
+                    diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
                 with nvtx.annotate("randint", color="green"):
                     random_choice[idx] += idx * 2 * self.ndim
             with nvtx.annotate("choice", color="green"):
-                diffusion_choice = random_choice.astype(int) * (random_sampling < diffuse_voxel)
-                    # print(diffuse_voxel.shape, diffuse_voxel[0])
-            
+                diffusion_choice = random_choice * (random_sampling < diffuse_voxel)
+                
+
             with nvtx.annotate("move_diffuse", color="green"):
-                for choicep1 in range(1, 2 * self.ndim + 1):
-                    choice = choicep1 - 1
-                    if self.ndim >= 1:
-                        with nvtx.annotate("dir1", color="purple"):
-                            if choice % (2*self.ndim) == 0: 
-                                with nvtx.annotate("move_action", color="brown"):
-                                    move_action = (diffusion_choice[:, 1:] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_up
-                                with nvtx.annotate("plus_move", color="brown"):
-                                    self.voxel_matrix[:, 1:] -= move_action
-                                with nvtx.annotate("minus_move", color="brown"):
-                                    self.voxel_matrix[:, :-1] += move_action
-                                continue
-                        with nvtx.annotate("dir2", color="purple"):
-                            if choice % (2*self.ndim) == 1:
-                                if self.ndim == 1: # Does not really happen
-                                    move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_down * (diffusion_choice[:, :-1] > 0)
-                                else:
-                                    move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_down
-                                self.voxel_matrix[:, :-1] -= move_action
-                                self.voxel_matrix[:, 1:] += move_action
-                                continue
-                    if self.ndim >= 2:
-                        with nvtx.annotate("dir3", color="purple"):
-                            if choice % (2*self.ndim) == 2:
-                                move_action = (diffusion_choice[:, :, 1:] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_left
-                                self.voxel_matrix[:, :, 1:] -= move_action
-                                self.voxel_matrix[:, :, :-1] += move_action
-                                continue
-                        with nvtx.annotate("dir4", color="purple"):
-                            if choice % (2*self.ndim) == 3:
-                                if self.ndim == 2:
-                                    move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_right * (diffusion_choice[:, :, :-1] > 0)
-                                else:
-                                    move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_right
-                                self.voxel_matrix[:, :, :-1] -= move_action
-                                self.voxel_matrix[:, :, 1:] += move_action
-                                continue
-                    if self.ndim >= 3:
-                        with nvtx.annotate("dir5", color="purple"):
-                            if choice % (2*self.ndim) == 4:
-                                move_action = (diffusion_choice[:, :, :, 1:] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_front
-                                self.voxel_matrix[:, :, :, 1:] -= move_action
-                                self.voxel_matrix[:, :, :, :-1] += move_action
-                                continue
-                        with nvtx.annotate("dir6", color="purple"):
-                            if choice % (2*self.ndim) == 5:
-                                if self.ndim == 3:
-                                    move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_back * (diffusion_choice[:, :, :, :-1] > 0)
-                                else: # does not really happen
-                                    move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == choicep1 % (2 * self.ndim)) * self.not_barrier_matrix_back
-                                self.voxel_matrix[:, :, :, :-1] -= move_action
-                                self.voxel_matrix[:, :, :, 1:] += move_action
-                                continue
-                        
+                with nvtx.annotate("dir1", color="purple"):
+                    with nvtx.annotate("move_action", color="brown"):
+                        move_action = (diffusion_choice[:, 1:] % (2*self.ndim) == 1 % (2 * self.ndim)) * self.not_barrier_matrix_up
+                    with nvtx.annotate("plus_move", color="brown"):
+                        self.voxel_matrix[:, 1:] -= move_action
+                    with nvtx.annotate("minus_move", color="brown"):
+                        self.voxel_matrix[:, :-1] += move_action
+                with nvtx.annotate("dir2", color="purple"):
+                    move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == 2 % (2 * self.ndim)) * self.not_barrier_matrix_down
+                    self.voxel_matrix[:, :-1] -= move_action
+                    self.voxel_matrix[:, 1:] += move_action
+                with nvtx.annotate("dir3", color="purple"):
+                    move_action = (diffusion_choice[:, :, 1:] % (2*self.ndim) == 3 % (2 * self.ndim)) * self.not_barrier_matrix_left
+                    self.voxel_matrix[:, :, 1:] -= move_action
+                    self.voxel_matrix[:, :, :-1] += move_action
+                with nvtx.annotate("dir4", color="purple"):
+                    if self.ndim == 2:
+                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 0 % (2 * self.ndim)) * self.not_barrier_matrix_right * (diffusion_choice[:, :, :-1] > 0)
+                    else:
+                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 4 % (2 * self.ndim)) * self.not_barrier_matrix_right
+                        self.voxel_matrix[:, :, :-1] -= move_action
+                        self.voxel_matrix[:, :, 1:] += move_action
+                if self.ndim >= 3:
+                    with nvtx.annotate("dir5", color="purple"):
+                        move_action = (diffusion_choice[:, :, :, 1:] % (2*self.ndim) == 5 % (2 * self.ndim)) * self.not_barrier_matrix_front
+                        self.voxel_matrix[:, :, :, 1:] -= move_action
+                        self.voxel_matrix[:, :, :, :-1] += move_action
+                    with nvtx.annotate("dir6", color="purple"):
+                        move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == 0 % (2 * self.ndim)) * self.not_barrier_matrix_back * (diffusion_choice[:, :, :, :-1] > 0)
+                        self.voxel_matrix[:, :, :, :-1] -= move_action
+                        self.voxel_matrix[:, :, :, 1:] += move_action
+    
+    
         with nvtx.annotate("react", color="orange"):
             # React part
             if self.reaction_set is not None:
@@ -341,38 +332,46 @@ class RediCell_CuPy:
                 for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
                     # Only if no diffusion happened there - guarantees no negative mol count
                     if len(reagent) == 2:
-                        reaction_voxel = 1 - cp.exp(-cp.prod(self.voxel_matrix[reagent], axis=0) * coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
-                    if len(reagent) == 1:
-                        reaction_voxel = 1 - cp.exp(-cp.prod(self.voxel_matrix[reagent], axis=0) * coeff * t_step)
+                        with nvtx.annotate("react 2 exp", color="green"):
+                            scaling = (-coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
+                            exponent = self.voxel_matrix[reagent[0]] * self.voxel_matrix[reagent[1]] * scaling
+                        with  nvtx.annotate("react 2 voxel", color="green"):
+                            reaction_voxel = 1 - cp.exp(exponent)
+                    elif len(reagent) == 1:
+                        with nvtx.annotate("react 1 exp", color="green"):
+                            scaling = (-coeff * t_step)
+                            exponent = self.voxel_matrix[reagent[0]] * scaling
+                        with nvtx.annotate("react 1 voxel", color="green"):
+                            reaction_voxel = 1 - cp.exp(exponent)
                     
                 # if reaction_voxel.max() > 0:
                 #     print(self.voxel_matrix[reagent].shape, reaction_voxel.max(axis=(1, 2, 3)), coeff, t_step)                
                     with nvtx.annotate("random", color="green"):
-                        random_sampling = cp.random.random(self.true_sides, dtype=np.float32)
-                    with nvtx.annotate("move_react", color="orange"):   
+                        random_sampling = cp.random.random(self.true_sides, dtype=cp.float32)
+                    with nvtx.annotate("move_react", color="green"):   
                         self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling < reaction_voxel)
                         
             self.cumulative_t += t_step
             self.t_trace.append(self.cumulative_t)
-            self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
+#             self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
                 
     def simulate(self, steps, t_step=None, plot_every=None, timing=False, warning=True):
         if not self.initialized:
             self.initialize()
         if t_step is not None:
             self.t_step = t_step
-        for step in range(steps):
+        for step in tqdm(range(steps)):
             if step == 0: 
                 t0 = time.time()
                 print(f'Simulate {steps} steps')
-            if steps > 100 and step % (steps // 100) == 0 and step > 0:
+            if timing and steps > 100 and step % (steps // 100) == 0 and step > 0:
                 print(step, end=' ')
             if timing and steps > 100 and step % (steps // 10) == 0 and step > 0:
                 t1 = time.time()
                 print(f'{(t1 - t0):.2f} s - {(t1-t0)*1000 / step:.2f} ms / step')
-                
-            self.maintain_external_conditions()
-            self.react_diffuse(self.t_step, warning=warning)
+            with nvtx.annotate("simulate", color="orange"):
+                self.maintain_external_conditions()
+                self.react_diffuse(self.t_step, warning=warning)
             if plot_every is not None:
                 if step % plot_every == 0:
                     self.plot(self.molecule_names)

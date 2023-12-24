@@ -32,9 +32,9 @@ def main(steps):
     
     a_supply_matrix = cp.zeros(a.true_sides)
     a_supply_matrix[(a.special_space_type == 0) * (a.barrier_type == -1)] = 1
-    a_supply_matrix[1:-1, 1:-1, [1, 2, -3, -2]] = 1
-    a_supply_matrix[1:-1, [1, 2, -3, -2], 1:-1] = 1
-    a_supply_matrix[[1, 2, -3, -2], 1:-1, 1:-1] = 1
+    a_supply_matrix[1:-1, 1:-1, [1, -2]] = 1
+    a_supply_matrix[1:-1, [1, -2], 1:-1] = 1
+    a_supply_matrix[[1, -2], 1:-1, 1:-1] = 1
 
     a.add_external_conditions(a_supply_matrix, mol_Iex, 5)
     a.show_external_conditions()
@@ -51,7 +51,7 @@ def main(steps):
     selection = [x[choice] for x in barriers]
     a.voxel_matrix[a.mol_to_id['Y'], selection[0], selection[1], selection[2]] = 1
     
-    a.simulate(steps, t_step=5e-5, plot_every=None, timing=True)
+    a.simulate(steps, t_step=5e-5, plot_every=None, timing=False)
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

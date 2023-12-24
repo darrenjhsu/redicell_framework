@@ -16,9 +16,9 @@ def main(dim, side, steps):
     rxset.add_reaction(['A', 'B'], ['C'], 1.07e5)
     rxset.add_reaction(['C'], ['A', 'B'], 0.351)
 
-    a = RediCell_CuPy(sides=[side]*dim, spacing=31.25e-9, molecule_types=molset, t_step=None)
-    a.add_reaction_set(rxset)
+    a = RediCell_CuPy(sides=[side]*dim, spacing=31.25e-9, molecule_types=molset, reaction_set=rxset, t_step=None)
     a.partition()
+    a.configure_barrier()
     
     num_mol = int(0.03 * side **dim)
     print(f'Put {num_mol} molecules')
@@ -34,7 +34,7 @@ def main(dim, side, steps):
     
     a.react_diffuse(t_step=1e-4)
     # cupy.cuda.profiler.start()
-    a.simulate(steps, t_step=1e-4, plot_every=None, timing=True)
+    a.simulate(steps, t_step=1e-4, plot_every=None, timing=False)
     # cupy.cuda.profiler.stop()
     # print(benchmark(a.react_diffuse, (1e-4,), n_repeat=200)) 
 
