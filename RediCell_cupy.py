@@ -230,7 +230,7 @@ class RediCell_CuPy:
             raise("region has to be either an existing space type, or a matrix with same shape as RediCell.true_sides")
         num_molecule = int(np.round(concentration / self.one_per_voxel_equal_um * real_region.sum()))
         region_voxel = cp.where(real_region)
-        self.external_conditions.append([real_region, self.mol_to_id[molecule.molecule_name], concentration, num_molecule])
+        self.external_conditions.append([real_region, self.mol_to_id[molecule.molecule_name], concentration, num_molecule, cp.where(real_region)])
     
     def show_external_conditions(self):
         for row in self.external_conditions:
@@ -244,32 +244,39 @@ class RediCell_CuPy:
                     self.voxel_matrix[row[1], row[0]] = 0
                     # print('emptied region')
                 else:
-                    with nvtx.annotate("sum", color="orange"):
+                    with nvtx.annotate("sum", color="green"):
                         current = int(self.voxel_matrix[row[1], row[0]].sum())
                         change = row[3] - current
                         
                     if change > 0:
                         with nvtx.annotate("where", color="green"):
-                            candidates = cp.where(row[0])
+                            candidates = row[4]
                         with nvtx.annotate("choice", color="green"):
-                            choices = cp.random.random(change) * len(candidates[0])
+                            choices = cp.random.random(change, dtype=cp.float32) * len(candidates[0])
                         with nvtx.annotate("select", color="green"):    
+                            # Use int32! Because choices may be a big number
                             selections = [x[choices.astype(cp.int32)] for x in candidates]
                         with nvtx.annotate("apply", color="green"):
                             if self.ndim == 2:
-                                self.voxel_matrix[row[1], selections[0], selections[1]] += 1
+                                self.voxel_matrix[row[1], selections[0], selections[1]] = 1
+#                                 self.voxel_matrix[row[1], selections[0], selections[1]] += 1
                             if self.ndim == 3:
-                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] += 1
+                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] = 1
+#                                 self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] += 1
                             # print(f'Added {change} molecules')
                     elif change < 0:
                         with nvtx.annotate("neg change", color="green"):
-                            candidates = cp.where((self.voxel_matrix[row[1]] * row[0]) == 1)
-                            choices = cp.random.random(-change) * len(candidates[0])
+                            # Hacky way to save time, doesn't work for low conc
+#                             candidates = cp.where((self.voxel_matrix[row[1]] * row[0]) == 1)
+                            candidates = row[4]
+                            choices = cp.random.random(-change, dtype=cp.float32) * len(candidates[0])
                             selections = [x[choices.astype(cp.int32)] for x in candidates]
                             if self.ndim == 2:
-                                self.voxel_matrix[row[1], selections[0], selections[1]] -= 1
+#                                 self.voxel_matrix[row[1], selections[0], selections[1]] -= 1
+                                self.voxel_matrix[row[1], selections[0], selections[1]] = 0
                             if self.ndim == 3:
-                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] -= 1
+#                                 self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] -= 1
+                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] = 0
                             # print(f'Deleted {change} molecules')
 
     @nvtx.annotate("react_diffuse()", color="purple")
@@ -285,8 +292,6 @@ class RediCell_CuPy:
                 # Diffuse part
                 with nvtx.annotate("vox1", color="green"):    
                     diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
-#                 with nvtx.annotate("randint", color="green"):
-#                     random_choice[idx] += idx * 2 * self.ndim
             with nvtx.annotate("choice", color="green"):
                 diffusion_choice = random_choice * (random_sampling < diffuse_voxel)
                 
