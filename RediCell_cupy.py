@@ -285,8 +285,8 @@ class RediCell_CuPy:
                 # Diffuse part
                 with nvtx.annotate("vox1", color="green"):    
                     diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
-                with nvtx.annotate("randint", color="green"):
-                    random_choice[idx] += idx * 2 * self.ndim
+#                 with nvtx.annotate("randint", color="green"):
+#                     random_choice[idx] += idx * 2 * self.ndim
             with nvtx.annotate("choice", color="green"):
                 diffusion_choice = random_choice * (random_sampling < diffuse_voxel)
                 
@@ -294,33 +294,30 @@ class RediCell_CuPy:
             with nvtx.annotate("move_diffuse", color="green"):
                 with nvtx.annotate("dir1", color="purple"):
                     with nvtx.annotate("move_action", color="brown"):
-                        move_action = (diffusion_choice[:, 1:] % (2*self.ndim) == 1) * self.not_barrier_matrix_up
+                        move_action = (diffusion_choice[:, 1:] == 1) * self.not_barrier_matrix_up
                     with nvtx.annotate("plus_move", color="brown"):
                         self.voxel_matrix[:, 1:] -= move_action
                     with nvtx.annotate("minus_move", color="brown"):
                         self.voxel_matrix[:, :-1] += move_action
                 with nvtx.annotate("dir2", color="purple"):
-                    move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == 2) * self.not_barrier_matrix_down
+                    move_action = (diffusion_choice[:, :-1] == 2) * self.not_barrier_matrix_down
                     self.voxel_matrix[:, :-1] -= move_action
                     self.voxel_matrix[:, 1:] += move_action
                 with nvtx.annotate("dir3", color="purple"):
-                    move_action = (diffusion_choice[:, :, 1:] % (2*self.ndim) == 3) * self.not_barrier_matrix_left
+                    move_action = (diffusion_choice[:, :, 1:] == 3) * self.not_barrier_matrix_left
                     self.voxel_matrix[:, :, 1:] -= move_action
                     self.voxel_matrix[:, :, :-1] += move_action
                 with nvtx.annotate("dir4", color="purple"):
-                    if self.ndim == 2:
-                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 0) * self.not_barrier_matrix_right * (diffusion_choice[:, :, :-1] > 0)
-                    else:
-                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 4) * self.not_barrier_matrix_right
-                        self.voxel_matrix[:, :, :-1] -= move_action
-                        self.voxel_matrix[:, :, 1:] += move_action
+                    move_action = (diffusion_choice[:, :, :-1] == 4) * self.not_barrier_matrix_right
+                    self.voxel_matrix[:, :, :-1] -= move_action
+                    self.voxel_matrix[:, :, 1:] += move_action
                 if self.ndim >= 3:
                     with nvtx.annotate("dir5", color="purple"):
-                        move_action = (diffusion_choice[:, :, :, 1:] % (2*self.ndim) == 5) * self.not_barrier_matrix_front
+                        move_action = (diffusion_choice[:, :, :, 1:] == 5) * self.not_barrier_matrix_front
                         self.voxel_matrix[:, :, :, 1:] -= move_action
                         self.voxel_matrix[:, :, :, :-1] += move_action
                     with nvtx.annotate("dir6", color="purple"):
-                        move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == 0) * self.not_barrier_matrix_back * (diffusion_choice[:, :, :, :-1] > 0)
+                        move_action = (diffusion_choice[:, :, :, :-1] == 6) * self.not_barrier_matrix_back
                         self.voxel_matrix[:, :, :, :-1] -= move_action
                         self.voxel_matrix[:, :, :, 1:] += move_action
     
