@@ -294,33 +294,33 @@ class RediCell_CuPy:
             with nvtx.annotate("move_diffuse", color="green"):
                 with nvtx.annotate("dir1", color="purple"):
                     with nvtx.annotate("move_action", color="brown"):
-                        move_action = (diffusion_choice[:, 1:] % (2*self.ndim) == 1 % (2 * self.ndim)) * self.not_barrier_matrix_up
+                        move_action = (diffusion_choice[:, 1:] % (2*self.ndim) == 1) * self.not_barrier_matrix_up
                     with nvtx.annotate("plus_move", color="brown"):
                         self.voxel_matrix[:, 1:] -= move_action
                     with nvtx.annotate("minus_move", color="brown"):
                         self.voxel_matrix[:, :-1] += move_action
                 with nvtx.annotate("dir2", color="purple"):
-                    move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == 2 % (2 * self.ndim)) * self.not_barrier_matrix_down
+                    move_action = (diffusion_choice[:, :-1] % (2*self.ndim) == 2) * self.not_barrier_matrix_down
                     self.voxel_matrix[:, :-1] -= move_action
                     self.voxel_matrix[:, 1:] += move_action
                 with nvtx.annotate("dir3", color="purple"):
-                    move_action = (diffusion_choice[:, :, 1:] % (2*self.ndim) == 3 % (2 * self.ndim)) * self.not_barrier_matrix_left
+                    move_action = (diffusion_choice[:, :, 1:] % (2*self.ndim) == 3) * self.not_barrier_matrix_left
                     self.voxel_matrix[:, :, 1:] -= move_action
                     self.voxel_matrix[:, :, :-1] += move_action
                 with nvtx.annotate("dir4", color="purple"):
                     if self.ndim == 2:
-                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 0 % (2 * self.ndim)) * self.not_barrier_matrix_right * (diffusion_choice[:, :, :-1] > 0)
+                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 0) * self.not_barrier_matrix_right * (diffusion_choice[:, :, :-1] > 0)
                     else:
-                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 4 % (2 * self.ndim)) * self.not_barrier_matrix_right
+                        move_action = (diffusion_choice[:, :, :-1] % (2*self.ndim) == 4) * self.not_barrier_matrix_right
                         self.voxel_matrix[:, :, :-1] -= move_action
                         self.voxel_matrix[:, :, 1:] += move_action
                 if self.ndim >= 3:
                     with nvtx.annotate("dir5", color="purple"):
-                        move_action = (diffusion_choice[:, :, :, 1:] % (2*self.ndim) == 5 % (2 * self.ndim)) * self.not_barrier_matrix_front
+                        move_action = (diffusion_choice[:, :, :, 1:] % (2*self.ndim) == 5) * self.not_barrier_matrix_front
                         self.voxel_matrix[:, :, :, 1:] -= move_action
                         self.voxel_matrix[:, :, :, :-1] += move_action
                     with nvtx.annotate("dir6", color="purple"):
-                        move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == 0 % (2 * self.ndim)) * self.not_barrier_matrix_back * (diffusion_choice[:, :, :, :-1] > 0)
+                        move_action = (diffusion_choice[:, :, :, :-1] % (2*self.ndim) == 0) * self.not_barrier_matrix_back * (diffusion_choice[:, :, :, :-1] > 0)
                         self.voxel_matrix[:, :, :, :-1] -= move_action
                         self.voxel_matrix[:, :, :, 1:] += move_action
     
@@ -353,7 +353,7 @@ class RediCell_CuPy:
                         
             self.cumulative_t += t_step
             self.t_trace.append(self.cumulative_t)
-#             self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
+            self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
                 
     def simulate(self, steps, t_step=None, plot_every=None, timing=False, warning=True):
         if not self.initialized:
