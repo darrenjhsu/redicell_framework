@@ -93,7 +93,7 @@ class RediCell_CuPy:
                                                        (1, *self.true_sides[1:])).astype(cp.float16)
                                          for x in self.reaction_vector_list]
 
-            self.reaction_voxel_shape = (self.num_reaction+1, *self.true_sides)
+            self.reaction_voxel_shape = (self.num_reaction, *self.true_sides)
 
     def set_border_wall(self, propagate=False): 
         if self.ndim >= 1:
@@ -327,8 +327,9 @@ class RediCell_CuPy:
     
         with nvtx.annotate("react", color="orange"):
             # React part
+            with nvtx.annotate("random", color="green"):
+                random_sampling = cp.random.random(self.reaction_voxel_shape, dtype=cp.float32)
             if self.reaction_set is not None:
-                # reaction_voxel = np.ones(self.reaction_voxel_shape, dtype=np.float32)
                 for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
                     # Only if no diffusion happened there - guarantees no negative mol count
                     if len(reagent) == 2:
@@ -346,10 +347,9 @@ class RediCell_CuPy:
                     
                 # if reaction_voxel.max() > 0:
                 #     print(self.voxel_matrix[reagent].shape, reaction_voxel.max(axis=(1, 2, 3)), coeff, t_step)                
-                    with nvtx.annotate("random", color="green"):
-                        random_sampling = cp.random.random(self.true_sides, dtype=cp.float32)
+
                     with nvtx.annotate("move_react", color="green"):   
-                        self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling < reaction_voxel)
+                        self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling[idx] < reaction_voxel)
                         
             self.cumulative_t += t_step
             self.t_trace.append(self.cumulative_t)
