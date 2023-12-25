@@ -286,7 +286,7 @@ class RediCell_CuPy:
                         # print(f'Deleted {change} molecules')
 
     @nvtx.annotate("react_diffuse()", color="purple")
-    def react_diffuse(self, t_step, warning=True):
+    def react_diffuse(self, t_step, warning=True, log=False):
         with nvtx.annotate("diffuse", color="orange"):
             with nvtx.annotate("rand setup", color="orange"):
 
@@ -359,10 +359,13 @@ class RediCell_CuPy:
                         self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling[idx] < reaction_voxel)
                         
             self.cumulative_t += t_step
-            self.t_trace.append(self.cumulative_t)
-            self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
+            
+            if log:
+                self.t_trace.append(self.cumulative_t)
+                self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
                 
-    def simulate(self, steps, t_step=None, plot_every=None, timing=False, maintain_every=50, warning=True):
+    def simulate(self, steps, t_step=None, plot_every=None, timing=False, 
+                 maintain_every=50, log_every=50, warning=True):
         if not self.initialized:
             self.initialize()
         if t_step is not None:
@@ -379,7 +382,10 @@ class RediCell_CuPy:
             with nvtx.annotate("simulate", color="orange"):
                 if step % maintain_every == 0:
                     self.maintain_external_conditions()
-                self.react_diffuse(self.t_step, warning=warning)
+                if step % log_every == 0:
+                    self.react_diffuse(self.t_step, warning=warning, log=True)
+                else:
+                    self.react_diffuse(self.t_step, warning=warning, log=False)
             if plot_every is not None:
                 if step % plot_every == 0:
                     self.plot(self.molecule_names)
