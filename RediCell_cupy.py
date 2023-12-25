@@ -366,7 +366,7 @@ class RediCell_CuPy:
                 self.conc_trace.append(self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1))))
                 
     def simulate(self, steps, t_step=None, plot_every=None, timing=False, 
-                 maintain_every=100, log_every=200, 
+                 maintain_every=100, log_every=500, 
                  traj_every=10000, traj_filename='traj.npy', 
                  checkpoint_every=10000, checkpoint_filename='checkpoint.pkl',
                  warning=True):
@@ -390,13 +390,14 @@ class RediCell_CuPy:
                     self.react_diffuse(self.t_step, warning=warning, log=True)
                 else:
                     self.react_diffuse(self.t_step, warning=warning, log=False)
-            if step % traj_every == 0:
-                print("Save traj")
-                with open(traj_filename, 'ab') as f:
-                    cp.save(f, self.voxel_matrix)
-            if step % checkpoint_every == 0:
-                print("Save checkpoint")
-                pickle.dump(self, open(checkpoint_filename, 'wb'))
+            if traj_every is not None:        
+                if step % traj_every == 0:
+#                     print("Save traj")
+                    with open(traj_filename, 'ab') as f:
+                        cp.save(f, self.voxel_matrix)
+            if checkpoint_every is not None:
+                if step % checkpoint_every == 0:
+                    pickle.dump(self, open(checkpoint_filename, 'wb'))
             if plot_every is not None:
                 if step % plot_every == 0:
                     self.plot(self.molecule_names)
