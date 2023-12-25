@@ -51,7 +51,7 @@ def main(steps):
     selection = [x[choice] for x in barriers]
     a.voxel_matrix[a.mol_to_id['Y'], selection[0], selection[1], selection[2]] = 1
     
-    a.simulate(steps, t_step=5e-5, plot_every=None, timing=False)
+    a.simulate(steps, t_step=5e-5, plot_every=None, timing=False, traj_filename='ecoli_test.npy', checkpoint_filename='ecoli_test.pkl')
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

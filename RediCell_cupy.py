@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import time
 import nvtx
 from tqdm import tqdm
+import pickle
 
 class RediCell_CuPy:
     
@@ -362,10 +363,13 @@ class RediCell_CuPy:
             
             if log:
                 self.t_trace.append(self.cumulative_t)
-                self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
+                self.conc_trace.append(self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1))))
                 
     def simulate(self, steps, t_step=None, plot_every=None, timing=False, 
-                 maintain_every=50, log_every=50, warning=True):
+                 maintain_every=100, log_every=200, 
+                 traj_every=10000, traj_filename='traj.npy', 
+                 checkpoint_every=10000, checkpoint_filename='checkpoint.pkl',
+                 warning=True):
         if not self.initialized:
             self.initialize()
         if t_step is not None:
@@ -386,6 +390,13 @@ class RediCell_CuPy:
                     self.react_diffuse(self.t_step, warning=warning, log=True)
                 else:
                     self.react_diffuse(self.t_step, warning=warning, log=False)
+            if step % traj_every == 0:
+                print("Save traj")
+                with open(traj_filename, 'ab') as f:
+                    cp.save(f, self.voxel_matrix)
+            if step % checkpoint_every == 0:
+                print("Save checkpoint")
+                pickle.dump(self, open(checkpoint_filename, 'wb'))
             if plot_every is not None:
                 if step % plot_every == 0:
                     self.plot(self.molecule_names)
