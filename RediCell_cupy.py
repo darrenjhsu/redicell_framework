@@ -79,6 +79,8 @@ class RediCell_CuPy:
             self.num_reaction = 0
 
         self.external_conditions = []
+        
+
 
     def partition(self):
         # m, x, y matrix
@@ -94,6 +96,8 @@ class RediCell_CuPy:
                                          for x in self.reaction_vector_list]
 
             self.reaction_voxel_shape = (self.num_reaction, *self.true_sides)
+            
+        self.diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
 
     def set_border_wall(self, propagate=False): 
         if self.ndim >= 1:
@@ -204,6 +208,8 @@ class RediCell_CuPy:
                 print(f'Reaction: reagent {reaction[0]} -> product {reaction[1]}')
         else:
             print('No reactions')
+            
+        
 
     
     def determine_maximum_timestep(self):
@@ -238,52 +244,52 @@ class RediCell_CuPy:
             
     @nvtx.annotate("maintain_external_conditions()", color="purple")
     def maintain_external_conditions(self):
-            for row in self.external_conditions:
-                if row[2] == 0:
-                    # Just remove everything in it
-                    self.voxel_matrix[row[1], row[0]] = 0
-                    # print('emptied region')
-                else:
-                    with nvtx.annotate("sum", color="green"):
-                        current = int(self.voxel_matrix[row[1], row[0]].sum())
-                        change = row[3] - current
-                        
-                    if change > 0:
-                        with nvtx.annotate("where", color="green"):
-                            candidates = row[4]
-                        with nvtx.annotate("choice", color="green"):
-                            choices = cp.random.random(change, dtype=cp.float32) * len(candidates[0])
-                        with nvtx.annotate("select", color="green"):    
-                            # Use int32! Because choices may be a big number
-                            selections = [x[choices.astype(cp.int32)] for x in candidates]
-                        with nvtx.annotate("apply", color="green"):
-                            if self.ndim == 2:
-                                self.voxel_matrix[row[1], selections[0], selections[1]] = 1
+        for row in self.external_conditions:
+            if row[2] == 0:
+                # Just remove everything in it
+                self.voxel_matrix[row[1], row[0]] = 0
+                # print('emptied region')
+            else:
+                with nvtx.annotate("sum", color="green"):
+                    current = int(self.voxel_matrix[row[1], row[0]].sum())
+                    change = row[3] - current
+
+                if change > 0:
+                    with nvtx.annotate("where", color="green"):
+                        candidates = row[4]
+                    with nvtx.annotate("choice", color="green"):
+                        choices = cp.random.random(change, dtype=cp.float32) * len(candidates[0])
+                    with nvtx.annotate("select", color="green"):    
+                        # Use int32! Because choices may be a big number
+                        selections = [x[choices.astype(cp.int32)] for x in candidates]
+                    with nvtx.annotate("apply", color="green"):
+                        if self.ndim == 2:
+                            self.voxel_matrix[row[1], selections[0], selections[1]] = 1
 #                                 self.voxel_matrix[row[1], selections[0], selections[1]] += 1
-                            if self.ndim == 3:
-                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] = 1
+                        if self.ndim == 3:
+                            self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] = 1
 #                                 self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] += 1
-                            # print(f'Added {change} molecules')
-                    elif change < 0:
-                        with nvtx.annotate("neg change", color="green"):
-                            # Hacky way to save time, doesn't work for low conc
+                        # print(f'Added {change} molecules')
+                elif change < 0:
+                    with nvtx.annotate("neg change", color="green"):
+                        # Hacky way to save time, doesn't work for low conc
 #                             candidates = cp.where((self.voxel_matrix[row[1]] * row[0]) == 1)
-                            candidates = row[4]
-                            choices = cp.random.random(-change, dtype=cp.float32) * len(candidates[0])
-                            selections = [x[choices.astype(cp.int32)] for x in candidates]
-                            if self.ndim == 2:
+                        candidates = row[4]
+                        choices = cp.random.random(-change, dtype=cp.float32) * len(candidates[0])
+                        selections = [x[choices.astype(cp.int32)] for x in candidates]
+                        if self.ndim == 2:
 #                                 self.voxel_matrix[row[1], selections[0], selections[1]] -= 1
-                                self.voxel_matrix[row[1], selections[0], selections[1]] = 0
-                            if self.ndim == 3:
+                            self.voxel_matrix[row[1], selections[0], selections[1]] = 0
+                        if self.ndim == 3:
 #                                 self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] -= 1
-                                self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] = 0
-                            # print(f'Deleted {change} molecules')
+                            self.voxel_matrix[row[1], selections[0], selections[1], selections[2]] = 0
+                        # print(f'Deleted {change} molecules')
 
     @nvtx.annotate("react_diffuse()", color="purple")
     def react_diffuse(self, t_step, warning=True):
         with nvtx.annotate("diffuse", color="orange"):
             with nvtx.annotate("rand setup", color="orange"):
-                diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
+
                 random_choice = (cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) * 2 * self.ndim + 1).astype(cp.int16)
                 random_sampling = cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) / t_step
             for idx in range(self.num_types):
@@ -291,10 +297,9 @@ class RediCell_CuPy:
                     continue
                 # Diffuse part
                 with nvtx.annotate("vox1", color="green"):    
-                    diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
+                    self.diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
             with nvtx.annotate("choice", color="green"):
-                diffusion_choice = random_choice * (random_sampling < diffuse_voxel)
-                
+                diffusion_choice = random_choice * (random_sampling < self.diffuse_voxel)
 
             with nvtx.annotate("move_diffuse", color="green"):
                 with nvtx.annotate("dir1", color="purple"):
@@ -357,7 +362,7 @@ class RediCell_CuPy:
             self.t_trace.append(self.cumulative_t)
             self.conc_trace.append(self.voxel_matrix.sum(tuple(range(1, self.ndim+1))))
                 
-    def simulate(self, steps, t_step=None, plot_every=None, timing=False, warning=True):
+    def simulate(self, steps, t_step=None, plot_every=None, timing=False, maintain_every=50, warning=True):
         if not self.initialized:
             self.initialize()
         if t_step is not None:
@@ -372,7 +377,8 @@ class RediCell_CuPy:
                 t1 = time.time()
                 print(f'{(t1 - t0):.2f} s - {(t1-t0)*1000 / step:.2f} ms / step')
             with nvtx.annotate("simulate", color="orange"):
-                self.maintain_external_conditions()
+                if step % maintain_every == 0:
+                    self.maintain_external_conditions()
                 self.react_diffuse(self.t_step, warning=warning)
             if plot_every is not None:
                 if step % plot_every == 0:
