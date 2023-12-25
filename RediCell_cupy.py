@@ -287,51 +287,60 @@ class RediCell_CuPy:
                         # print(f'Deleted {change} molecules')
 
     @nvtx.annotate("react_diffuse()", color="purple")
-    def react_diffuse(self, t_step, warning=True, log=False):
+    def react_diffuse(self, t_step, streams, warning=True, log=False):
         with nvtx.annotate("diffuse", color="orange"):
             with nvtx.annotate("rand setup", color="orange"):
+                with streams[0]:
+                    random_choice = (cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) * 2 * self.ndim + 1).astype(cp.int16)
+                with streams[1]:
+                    random_sampling = cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) / t_step
 
-                random_choice = (cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) * 2 * self.ndim + 1).astype(cp.int16)
-                random_sampling = cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) / t_step
-            for idx in range(self.num_types):
-                if isinstance(self.diffusion_vector[idx], float) and self.diffusion_vector[idx] == 0:
-                    continue
-                # Diffuse part
-                with nvtx.annotate("vox1", color="green"):    
-                    self.diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
+                for idx in range(self.num_types):
+                    with streams[(2+idx) % 6]:
+                        if isinstance(self.diffusion_vector[idx], float) and self.diffusion_vector[idx] == 0:
+                            continue
+                        # Diffuse part
+                        with nvtx.annotate("vox1", color="green"):    
+                            self.diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
+                for ss in streams:
+                    ss.synchronize()
+                
             with nvtx.annotate("choice", color="green"):
                 diffusion_choice = random_choice * (random_sampling < self.diffuse_voxel)
 
-            with nvtx.annotate("move_diffuse", color="green"):
-                with nvtx.annotate("dir1", color="purple"):
-                    with nvtx.annotate("move_action", color="brown"):
-                        move_action = (diffusion_choice[:, 1:] == 1) * self.not_barrier_matrix_up
-                    with nvtx.annotate("plus_move", color="brown"):
-                        self.voxel_matrix[:, 1:] -= move_action
-                    with nvtx.annotate("minus_move", color="brown"):
-                        self.voxel_matrix[:, :-1] += move_action
-                with nvtx.annotate("dir2", color="purple"):
-                    move_action = (diffusion_choice[:, :-1] == 2) * self.not_barrier_matrix_down
-                    self.voxel_matrix[:, :-1] -= move_action
-                    self.voxel_matrix[:, 1:] += move_action
-                with nvtx.annotate("dir3", color="purple"):
-                    move_action = (diffusion_choice[:, :, 1:] == 3) * self.not_barrier_matrix_left
-                    self.voxel_matrix[:, :, 1:] -= move_action
-                    self.voxel_matrix[:, :, :-1] += move_action
-                with nvtx.annotate("dir4", color="purple"):
-                    move_action = (diffusion_choice[:, :, :-1] == 4) * self.not_barrier_matrix_right
-                    self.voxel_matrix[:, :, :-1] -= move_action
-                    self.voxel_matrix[:, :, 1:] += move_action
+            with nvtx.annotate("move_action", color="green"):    
+                with streams[0]:
+                    with nvtx.annotate("and", color="orange"):    
+                        move_action1 = (diffusion_choice[:, 1:] == 1) & self.not_barrier_matrix_up
+                with streams[1]:
+                    move_action2 = (diffusion_choice[:, :-1] == 2) & self.not_barrier_matrix_down
+                with streams[2]:
+                    move_action3 = (diffusion_choice[:, :, 1:] == 3) & self.not_barrier_matrix_left
+                with streams[3]:
+                    move_action4 = (diffusion_choice[:, :, :-1] == 4) & self.not_barrier_matrix_right
                 if self.ndim >= 3:
-                    with nvtx.annotate("dir5", color="purple"):
-                        move_action = (diffusion_choice[:, :, :, 1:] == 5) * self.not_barrier_matrix_front
-                        self.voxel_matrix[:, :, :, 1:] -= move_action
-                        self.voxel_matrix[:, :, :, :-1] += move_action
-                    with nvtx.annotate("dir6", color="purple"):
-                        move_action = (diffusion_choice[:, :, :, :-1] == 6) * self.not_barrier_matrix_back
-                        self.voxel_matrix[:, :, :, :-1] -= move_action
-                        self.voxel_matrix[:, :, :, 1:] += move_action
-    
+                    with streams[4]:
+                        move_action5 = (diffusion_choice[:, :, :, 1:] == 5) & self.not_barrier_matrix_front
+                    with streams[5]:
+                        move_action6 = (diffusion_choice[:, :, :, :-1] == 6) & self.not_barrier_matrix_back
+                for ss in streams:
+                    ss.synchronize()
+
+            with nvtx.annotate("move", color="green"):    
+                self.voxel_matrix[:, 1:] -= move_action1
+                self.voxel_matrix[:, :-1] += move_action1
+                self.voxel_matrix[:, :-1] -= move_action2
+                self.voxel_matrix[:, 1:] += move_action2
+                self.voxel_matrix[:, :, 1:] -= move_action3
+                self.voxel_matrix[:, :, :-1] += move_action3
+                self.voxel_matrix[:, :, :-1] -= move_action4
+                self.voxel_matrix[:, :, 1:] += move_action4
+                if self.ndim >= 3:
+                    self.voxel_matrix[:, :, :, 1:] -= move_action5
+                    self.voxel_matrix[:, :, :, :-1] += move_action5
+                    self.voxel_matrix[:, :, :, :-1] -= move_action6
+                    self.voxel_matrix[:, :, :, 1:] += move_action6
+
     
         with nvtx.annotate("react", color="orange"):
             # React part
@@ -374,6 +383,8 @@ class RediCell_CuPy:
             self.initialize()
         if t_step is not None:
             self.t_step = t_step
+        n_streams = 6
+        streams = [cp.cuda.stream.Stream(non_blocking=True) for x in range(n_streams)]
         for step in tqdm(range(steps)):
             if step == 0: 
                 t0 = time.time()
@@ -386,10 +397,7 @@ class RediCell_CuPy:
             with nvtx.annotate("simulate", color="orange"):
                 if step % maintain_every == 0:
                     self.maintain_external_conditions()
-                if step % log_every == 0:
-                    self.react_diffuse(self.t_step, warning=warning, log=True)
-                else:
-                    self.react_diffuse(self.t_step, warning=warning, log=False)
+                self.react_diffuse(self.t_step, streams=streams, warning=warning, log=(step % log_every == 0))
             if traj_every is not None:        
                 if step % traj_every == 0:
 #                     print("Save traj")
