@@ -98,6 +98,12 @@ class RediCell_CuPy:
 
             self.reaction_voxel_shape = (self.num_reaction, *self.true_sides)
             
+            self.reaction_location = cp.ones(self.reaction_voxel_shape, dtype=bool)
+            
+            for idx, reaction in enumerate(self.reaction_set.reaction):
+                if reaction[3] is not None:
+                    self.reaction_location[idx] = cp.array(reaction[3], dtype=bool)
+            
         self.diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
 
     def set_border_wall(self, propagate=False): 
@@ -140,12 +146,19 @@ class RediCell_CuPy:
         if self.ndim >= 1:
             self.not_barrier_matrix_up = self.not_barrier_matrix[:, :-1]
             self.not_barrier_matrix_down = self.not_barrier_matrix[:, 1:]
+            self.not_barrier_matrix_up[:, 0] = 0
+            self.not_barrier_matrix_down[:, -1] = 0
         if self.ndim >= 2:
             self.not_barrier_matrix_left = self.not_barrier_matrix[:, :, :-1]
+            self.not_barrier_matrix_left[:, :, 0] = 0
             self.not_barrier_matrix_right = self.not_barrier_matrix[:, :, 1:]
+            self.not_barrier_matrix_right[:, :, -1] = 0
         if self.ndim >= 3:
             self.not_barrier_matrix_front = self.not_barrier_matrix[:, :, :, :-1]
+            self.not_barrier_matrix_front[:, :, :, 0] = 0
             self.not_barrier_matrix_back = self.not_barrier_matrix[:, :, :, 1:]
+            self.not_barrier_matrix_back[:, :, :, -1] = 0
+    
     
     def plot_wall(self):
         assert self.ndim == 2
@@ -336,7 +349,8 @@ class RediCell_CuPy:
         with nvtx.annotate("react", color="orange"):
             # React part
             with nvtx.annotate("random", color="green"):
-                random_sampling = cp.random.random(self.reaction_voxel_shape, dtype=cp.float32)
+                # Filter by possible locations of reactions
+                random_sampling = cp.random.random(self.reaction_voxel_shape, dtype=cp.float32) * self.reaction_location
             if self.reaction_set is not None:
                 for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
                     # Only if no diffusion happened there - guarantees no negative mol count
@@ -505,8 +519,8 @@ class Molecule:
 class ReactionSet:
     def __init__(self):
         self.reaction = []
-    def add_reaction(self, reagent, product, reaction_coefficient):
+    def add_reaction(self, reagent, product, reaction_coefficient, location=None):
         # reagent can be [typeA, typeB] for bimolecular reaction
         # or [typeA] or typeA for unimolecular reaction
-        self.reaction.append([reagent, product, reaction_coefficient])
+        self.reaction.append([reagent, product, reaction_coefficient, location])
         

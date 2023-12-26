@@ -11,9 +11,9 @@ import nvtx
 
 def main(steps):
     d = DesignTool()
-    d.get_blanket_space([128, 64, 64], spacing=16e-9)
-    d.add_ecoli_rod(l=2e-6, r=0.4e-6, barrier_type=1, space_type=1, offsety=0)#, offsety=1.6e-7)
-    d.set_border_wall()
+    d.get_blanket_space([131, 57, 57], spacing=16e-9, wall=False)
+    d.add_ecoli_rod(l=2e-6, r=0.4e-6, barrier_type=1, space_type=1, offsety=0, thickness=2, method='const')#, offsety=1.6e-7)
+    
     # mol set
     mol_Iex = Molecule('Iex', diffusion_coefficient=1.28e-12, observed_barrier_types=None)
     mol_Iin = Molecule('Iin', diffusion_coefficient=1.28e-12, observed_barrier_types=None)
