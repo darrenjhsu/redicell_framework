@@ -92,17 +92,21 @@ class RediCell_CuPy:
         
         if self.reaction_set is not None:
         
+#             self.reaction_matrix_list = [cp.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
+#                                                        (1, *self.true_sides[1:])).astype(cp.float16)
+#                                          for x in self.reaction_vector_list]
+
             self.reaction_matrix_list = [cp.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
-                                                       (1, *self.true_sides[1:])).astype(cp.float16)
+                                                       (self.true_sides)).astype(cp.float16)
                                          for x in self.reaction_vector_list]
 
             self.reaction_voxel_shape = (self.num_reaction, *self.true_sides)
             
-            self.reaction_location = cp.ones(self.reaction_voxel_shape, dtype=bool)
+#             self.reaction_location = cp.ones(self.reaction_voxel_shape, dtype=bool)
             
             for idx, reaction in enumerate(self.reaction_set.reaction):
                 if reaction[3] is not None:
-                    self.reaction_location[idx] = cp.array(reaction[3], dtype=bool)
+                    self.reaction_matrix_list[idx] *= cp.array(reaction[3], dtype=bool)[None, :]
             
         self.diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
 
@@ -146,18 +150,14 @@ class RediCell_CuPy:
         if self.ndim >= 1:
             self.not_barrier_matrix_up = self.not_barrier_matrix[:, :-1]
             self.not_barrier_matrix_down = self.not_barrier_matrix[:, 1:]
-            self.not_barrier_matrix_up[:, 0] = 0
-            self.not_barrier_matrix_down[:, -1] = 0
+
         if self.ndim >= 2:
             self.not_barrier_matrix_left = self.not_barrier_matrix[:, :, :-1]
-            self.not_barrier_matrix_left[:, :, 0] = 0
             self.not_barrier_matrix_right = self.not_barrier_matrix[:, :, 1:]
-            self.not_barrier_matrix_right[:, :, -1] = 0
+
         if self.ndim >= 3:
             self.not_barrier_matrix_front = self.not_barrier_matrix[:, :, :, :-1]
-            self.not_barrier_matrix_front[:, :, :, 0] = 0
             self.not_barrier_matrix_back = self.not_barrier_matrix[:, :, :, 1:]
-            self.not_barrier_matrix_back[:, :, :, -1] = 0
     
     
     def plot_wall(self):
@@ -267,7 +267,7 @@ class RediCell_CuPy:
                 with nvtx.annotate("sum", color="green"):
                     current = int(self.voxel_matrix[row[1], row[0]].sum())
                     change = row[3] - current
-
+#                     print(f'Current: {current}, ideally {row[3]}, change: {change}')
                 if change > 0:
                     with nvtx.annotate("where", color="green"):
                         candidates = row[4]
@@ -287,8 +287,8 @@ class RediCell_CuPy:
                 elif change < 0:
                     with nvtx.annotate("neg change", color="green"):
                         # Hacky way to save time, doesn't work for low conc
-#                             candidates = cp.where((self.voxel_matrix[row[1]] * row[0]) == 1)
-                        candidates = row[4]
+                        candidates = cp.where((self.voxel_matrix[row[1]] * row[0]) == 1)
+#                         candidates = row[4]
                         choices = cp.random.random(-change, dtype=cp.float32) * len(candidates[0])
                         selections = [x[choices.astype(cp.int32)] for x in candidates]
                         if self.ndim == 2:
@@ -345,13 +345,14 @@ class RediCell_CuPy:
                         self.voxel_matrix[:, :, :, :-1] -= move_action
                         self.voxel_matrix[:, :, :, 1:] += move_action
     
-    
+       
         with nvtx.annotate("react", color="orange"):
-            # React part
-            with nvtx.annotate("random", color="green"):
-                # Filter by possible locations of reactions
-                random_sampling = cp.random.random(self.reaction_voxel_shape, dtype=cp.float32) * self.reaction_location
             if self.reaction_set is not None:
+                # React part
+                with nvtx.annotate("random", color="green"):
+                    # Filter by possible locations of reactions
+                    random_sampling = cp.random.random(self.reaction_voxel_shape, dtype=cp.float32) #* self.reaction_location
+            
                 for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
                     # Only if no diffusion happened there - guarantees no negative mol count
                     if len(reagent) == 2:
@@ -373,11 +374,11 @@ class RediCell_CuPy:
                     with nvtx.annotate("move_react", color="green"):   
                         self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling[idx] < reaction_voxel)
                         
-            self.cumulative_t += t_step
-            
-            if log:
-                self.t_trace.append(self.cumulative_t)
-                self.conc_trace.append(self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1))))
+        self.cumulative_t += t_step
+
+        if log:
+            self.t_trace.append(self.cumulative_t)
+            self.conc_trace.append(self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1))))
                 
     def simulate(self, steps, t_step=None, plot_every=None, timing=False, 
                  maintain_every=100, log_every=500, 
