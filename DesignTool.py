@@ -148,16 +148,22 @@ class DesignTool:
         print(f'Voxel {v} has a coordinate of {np.array([self.side_coord[x][v[x]] for x in range(len(v))])}')
         return np.array([self.side_coord[x][v[x]] for x in range(len(v))])
 
-    def find_seperating_boundary(self, distance, r, return_factor=False):
+    def find_seperating_boundary(self, distance, r, return_factor=False, thickness=1, method='mid'):
         # Adjust factor until a full separating boundary can be drawn
+        structure = ndimage.generate_binary_structure(distance.ndim, connectivity=thickness)
         factor = 5.0
         while factor > 0:
-            factor -= 0.1
-            object = (distance > (r - self.spacing / factor)) * (distance < (r + self.spacing / factor))
-            label = ndimage.label(1-object)
+            factor -= 0.1 / thickness / thickness
+            if method == 'mid':
+                selections = (distance > (r - self.spacing / factor)) * (distance < (r + self.spacing / factor))
+            elif method == 'const':
+                selections = (distance > r) * (distance < (r + self.spacing / factor))
+            else:
+                raise
+            label = ndimage.label(1-selections, structure=structure)
             if label[1] >= 2:
-                # print(f'Determined factor for a separating boundary as {factor:.1f}')
-                return object, label, factor
+                print(f'Determined factor for a separating boundary as {factor:.1f}')
+                return selections, label, factor
             if factor == 0.0:
                 raise("Could not determine a good factor to generate a separating boundary")
                 
@@ -208,7 +214,7 @@ class DesignTool:
         # Same as adding circle
         self.add_circle(r, barrier_type, offsetx=0, offsety=0, offsetz=0)
 
-    def add_rod(self, l, r, barrier_type, space_type=None, direction='x', offsetx=0, offsety=0, offsetz=0):
+    def add_rod(self, l, r, barrier_type, space_type=None, direction='x', offsetx=0, offsety=0, offsetz=0, thickness=1, method='mid'):
         assert self.ndim == 3
         temp_barrier = np.zeros_like(self.barrier_type)
         center_v = self.shift_center(self.center_v, [offsetx, offsety, offsetz])
@@ -219,7 +225,7 @@ class DesignTool:
         xm = self.determine_coord([vxm, *center_v[1:]])
         xm_dist = self.distance_to_center(self.mesh, [xm[0], center_x[1], center_x[2]])
         print(xm_dist.shape)
-        tube, label, factor = self.find_seperating_boundary(xm_dist[vxm], r, return_factor=True)
+        tube, label, factor = self.find_seperating_boundary(xm_dist[vxm], r, return_factor=True, thickness=thickness, method=method)
         temp_barrier[vxm:vxp, tube] = barrier_type
         temp_barrier[vxm, xm_dist[vxm] < (r + self.spacing / factor)] = barrier_type
         temp_barrier[vxp, xm_dist[vxm] < (r + self.spacing / factor)] = barrier_type
@@ -233,7 +239,7 @@ class DesignTool:
         if space_type is not None:
             self.special_space_type[label[0] == label_in] = space_type
             
-    def add_ecoli_rod(self, l, r, barrier_type, space_type=None, direction='x', offsetx=0, offsety=0, offsetz=0):
+    def add_ecoli_rod(self, l, r, barrier_type, space_type=None, direction='x', offsetx=0, offsety=0, offsetz=0, thickness=1, method='mid'):
         assert self.ndim == 3
         temp_barrier = np.zeros_like(self.barrier_type)
         # Rod part
@@ -246,12 +252,12 @@ class DesignTool:
         xm_dist = self.distance_to_center(self.mesh, [xm[0], center_x[1], center_x[2]])
         xp_dist = self.distance_to_center(self.mesh, [xp[0], center_x[1], center_x[2]])
         factor = 5.0
-        tube, label, factor = self.find_seperating_boundary(xm_dist[vxm], r)
+        tube, label, factor = self.find_seperating_boundary(xm_dist[vxm], r, thickness=thickness, method=method)
         temp_barrier[vxm:vxp, tube] = 1
         # Cap part
-        cap, label, factor = self.find_seperating_boundary(xm_dist, r)
+        cap, label, factor = self.find_seperating_boundary(xm_dist, r, thickness=thickness, method=method)
         temp_barrier[:vxm] = cap[:vxm]
-        cap, label, factor = self.find_seperating_boundary(xp_dist, r)
+        cap, label, factor = self.find_seperating_boundary(xp_dist, r, thickness=thickness, method=method)
         temp_barrier[vxp:] = cap[vxp:]
         label = ndimage.label(1 - temp_barrier>0)
         if label[1] > 1:
