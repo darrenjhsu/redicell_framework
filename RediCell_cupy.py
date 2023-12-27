@@ -85,24 +85,18 @@ class RediCell_CuPy:
 
     def partition(self):
         # m, x, y matrix
-        self.voxel_matrix = cp.zeros((self.num_types, *self.true_sides)).astype(cp.float16)
+        self.voxel_matrix = cp.zeros((self.num_types, *self.true_sides)).astype(cp.float32)
         self.voxel_matrix_shape = self.voxel_matrix.shape
 
         self.construct_possible_actions()
         
         if self.reaction_set is not None:
         
-#             self.reaction_matrix_list = [cp.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
-#                                                        (1, *self.true_sides[1:])).astype(cp.float16)
-#                                          for x in self.reaction_vector_list]
-
             self.reaction_matrix_list = [cp.tile(np.expand_dims(x, tuple(range(1, self.ndim+1))), 
-                                                       (self.true_sides)).astype(cp.float16)
+                                                       (self.true_sides)).astype(cp.float32)
                                          for x in self.reaction_vector_list]
 
             self.reaction_voxel_shape = (self.num_reaction, *self.true_sides)
-            
-#             self.reaction_location = cp.ones(self.reaction_voxel_shape, dtype=bool)
             
             for idx, reaction in enumerate(self.reaction_set.reaction):
                 if reaction[3] is not None:
@@ -206,9 +200,9 @@ class RediCell_CuPy:
                 reaction_vector = cp.zeros(self.num_types)
                 for reagent in reaction[0]: # Should be names of the reagents
                     reagent_vector.append(self.mol_to_id[reagent])
-                    reaction_vector[self.mol_to_id[reagent]] = -1
+                    reaction_vector[self.mol_to_id[reagent]] -= 1
                 for product in reaction[1]:
-                    reaction_vector[self.mol_to_id[product]] = 1
+                    reaction_vector[self.mol_to_id[product]] += 1
                 self.reagent_vector_list.append(reagent_vector)
                 self.reaction_vector_list.append(reaction_vector.astype(int))
                 self.reaction_coefficients.append(reaction[2])
@@ -359,7 +353,7 @@ class RediCell_CuPy:
                         with nvtx.annotate("react 2 exp", color="green"):
                             scaling = (-coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
                             exponent = self.voxel_matrix[reagent[0]] * self.voxel_matrix[reagent[1]] * scaling
-                        with  nvtx.annotate("react 2 voxel", color="green"):
+                        with nvtx.annotate("react 2 voxel", color="green"):
                             reaction_voxel = 1 - cp.exp(exponent)
                     elif len(reagent) == 1:
                         with nvtx.annotate("react 1 exp", color="green"):
