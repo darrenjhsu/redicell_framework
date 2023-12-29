@@ -102,7 +102,7 @@ class RediCell_CuPy:
                 if reaction[3] is not None:
                     self.reaction_matrix_list[idx] *= cp.array(reaction[3], dtype=bool)[None, :]
             
-        self.diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
+        
 
     def set_border_wall(self, propagate=False): 
         if self.ndim >= 1:
@@ -187,7 +187,7 @@ class RediCell_CuPy:
                 self.diffusion_vector.append(self.ndim * 2 * mol.diffusion_coefficient / self.spacing**2) 
             else: # there is special diffusion coefficients, process it
                 # Base diffusion
-                diffusion_matrix = cp.ones(self.true_sides) * self.ndim * 2 * mol.diffusion_coefficient / self.spacing**2
+                diffusion_matrix = cp.ones(self.true_sides, dtype=cp.float32) * self.ndim * 2 * mol.diffusion_coefficient / self.spacing**2
                 # Special diffusions
                 for key in mol.special_diffusion_coefficients.keys():
                     print("Do special diffusion")
@@ -297,10 +297,12 @@ class RediCell_CuPy:
     def react_diffuse(self, t_step, warning=True, log=False):
         with nvtx.annotate("diffuse", color="orange"):
             with nvtx.annotate("rand setup", color="orange"):
-
+                self.diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
                 random_choice = (cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) * 2 * self.ndim + 1).astype(cp.int16)
                 random_sampling = cp.random.random(self.voxel_matrix_shape, dtype=cp.float32) / t_step
             for idx in range(self.num_types):
+                if self.current_conc[idx] == 0:
+                        continue
                 if isinstance(self.diffusion_vector[idx], float) and self.diffusion_vector[idx] == 0:
                     continue
                 # Diffuse part
@@ -349,8 +351,12 @@ class RediCell_CuPy:
             
                 for idx, (reagent, coeff) in enumerate(zip(self.reagent_vector_list, self.reaction_coefficients)):
                     # Only if no diffusion happened there - guarantees no negative mol count
+                    if self.current_conc[reagent[0]] == 0:
+                        continue
                     if len(reagent) == 2:
                         with nvtx.annotate("react 2 exp", color="green"):
+                            if self.current_conc[reagent[1]] == 0:
+                                continue
                             scaling = (-coeff / 6.023e23 / self.spacing**3 / 1000 * t_step)
                             exponent = self.voxel_matrix[reagent[0]] * self.voxel_matrix[reagent[1]] * scaling
                         with nvtx.annotate("react 2 voxel", color="green"):
@@ -362,23 +368,23 @@ class RediCell_CuPy:
                         with nvtx.annotate("react 1 voxel", color="green"):
                             reaction_voxel = 1 - cp.exp(exponent)
                     
-                # if reaction_voxel.max() > 0:
-                #     print(self.voxel_matrix[reagent].shape, reaction_voxel.max(axis=(1, 2, 3)), coeff, t_step)                
-
                     with nvtx.annotate("move_react", color="green"):   
                         self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling[idx] < reaction_voxel)
                         
         self.cumulative_t += t_step
 
         if log:
-            self.t_trace.append(self.cumulative_t)
-            self.conc_trace.append(self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1))))
+            pass
+        self.t_trace.append(self.cumulative_t)
+        self.current_conc = self.voxel_matrix.astype(cp.int32).sum(tuple(range(1, self.ndim+1))).get()
+        self.conc_trace.append(self.current_conc)
                 
     def simulate(self, steps, t_step=None, plot_every=None, timing=False, 
                  maintain_every=100, log_every=500, 
                  traj_every=10000, traj_filename='traj.npy', 
                  checkpoint_every=10000, checkpoint_filename='checkpoint.pkl',
                  warning=True):
+        self.current_conc = self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1)))
         if not self.initialized:
             self.initialize()
         if t_step is not None:
