@@ -49,9 +49,9 @@ def main(steps):
     
     # rx set
     rxset = ReactionSet()
-    rxset.add_reaction(['R2', 'O'], ['R2O'], 2.43e6)
-    rxset.add_reaction(['IR2', 'O'], ['IR2O'], 1.21e6)
-    rxset.add_reaction(['I2R2', 'O'], ['I2R2O'], 2.43e4)
+    rxset.add_reaction(['O', 'R2'], ['R2O'], 2.43e6)
+    rxset.add_reaction(['O', 'IR2'], ['IR2O'], 1.21e6)
+    rxset.add_reaction(['O', 'I2R2'], ['I2R2O'], 2.43e4)
     rxset.add_reaction(['R2O'], ['R2', 'O'], 6.3e-4)
     rxset.add_reaction(['IR2O'], ['IR2', 'O'], 6.3e-4)
     rxset.add_reaction(['I2R2O'], ['I2R2', 'O'], 3.15e-1)
@@ -59,10 +59,10 @@ def main(steps):
     rxset.add_reaction(['mY'], ['mY', 'Y'], 4.44e-2, location=d.special_space_type==2)
     rxset.add_reaction(['mY'], [], 1.11e-2, location=d.special_space_type==2)
     rxset.add_reaction(['Y'], [], 2.1e-4)
-    rxset.add_reaction(['I', 'R2'], ['IR2'], 9.71e4)
-    rxset.add_reaction(['I', 'IR2'], ['I2R2'], 4.85e4)
-    rxset.add_reaction(['I', 'R2O'], ['IR2O'], 2.24e4)
-    rxset.add_reaction(['I', 'IR2O'], ['I2R2O'], 1.12e4)
+    rxset.add_reaction(['R2', 'I'], ['IR2'], 9.71e4)
+    rxset.add_reaction(['IR2', 'I'], ['I2R2'], 4.85e4)
+    rxset.add_reaction(['R2O', 'I'], ['IR2O'], 2.24e4)
+    rxset.add_reaction(['IR2O', 'I'], ['I2R2O'], 1.12e4)
     rxset.add_reaction(['IR2'], ['I', 'R2'], 2e-1)
     rxset.add_reaction(['I2R2'], ['I', 'IR2'], 4e-1)
     rxset.add_reaction(['IR2O'], ['I', 'R2O'], 1.0)
@@ -125,8 +125,7 @@ def main(steps):
     
     a.determine_maximum_timestep()
     
-    a.simulate(steps, t_step=5e-5, plot_every=None, timing=False, traj_every=None, checkpoint_every=None,
-               traj_filename='ecoli_test.npy', checkpoint_filename='ecoli_test.pkl')
+    a.simulate(steps, t_step=5e-5, traj_every=5000, log_every=100, checkpoint_every=50000)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

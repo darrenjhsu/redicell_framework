@@ -1,16 +1,22 @@
 import cupy as cp, numpy as np
 import matplotlib.pyplot as plt
 import time
+from datetime import datetime
 import nvtx
 from tqdm import tqdm
 import pickle
+import h5py
+
 
 class RediCell_CuPy:
     
-    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True, design=None):
+    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True, design=None, project_name='redicell'):
         # sides in number of voxels
         # spacing in m
         # "wall" adds one extra cell each direction, set as barrier
+        
+        
+        
         if design is not None:
             self.spacing = design.spacing
             self.wall = design.wall
@@ -39,8 +45,6 @@ class RediCell_CuPy:
         
         self.initialized = False
         self.voxel_matrix = []
-    
-    
         
         if self.wall:
             self.true_sides = self.sides + 2
@@ -48,14 +52,12 @@ class RediCell_CuPy:
             self.true_sides = self.sides
 
         self.t_step = t_step
-        self.t_trace = []
-        self.conc_trace = []
         self.diffusion_vector = None
         self.reagent_vector_list = []
         self.reaction_vector_list = []
         self.reaction_coefficients = []
         self.fig = None
-        self.cumulative_t = 0
+        self.cumulative_t = 0.
         self.reaction_set = None
         self.num_reaction = 0
 
@@ -81,7 +83,23 @@ class RediCell_CuPy:
 
         self.external_conditions = []
         
+        self.timestamp = time.time()
+        self.timestring = self.convert_timestamp(self.timestamp) # Used for suffixing file
+        self.project_name = project_name + self.timestring
+        self.checkpoint_filename = self.project_name + '.ckpt'
+        self.traj_filename = self.project_name + '.hdf5'
+        self.step = 0
+        self.frame = 0
+        self.start_from_scratch=True
+        
+    def convert_timestamp(self, timestamp):
+        # Convert timestamp to datetime object
+        dt_object = datetime.fromtimestamp(timestamp)
 
+        # Format the datetime object as yyyy-mm-dd-hh-mm-ss
+        formatted_time = dt_object.strftime('%Y-%m-%d-%H-%M-%S')
+
+        return formatted_time
 
     def partition(self):
         # m, x, y matrix
@@ -166,6 +184,9 @@ class RediCell_CuPy:
         # Set external conditions
         # Compile all possible reactions (diffuse to 4 neighbors, reactions, and do nothing)
         # Calculate largest possible timestep
+        with h5py.File(self.traj_filename, 'a') as f:
+            grp = f.create_group('metadata')
+#             mols = grp.create_dataset('metadata/mols', data=np.array(self.molecule_names))            
         self.initialized = True
         
     def replace_reaction_set(self, reaction_set=None):
@@ -294,7 +315,7 @@ class RediCell_CuPy:
                         # print(f'Deleted {change} molecules')
 
     @nvtx.annotate("react_diffuse()", color="purple")
-    def react_diffuse(self, t_step, warning=True, log=False):
+    def react_diffuse(self, t_step, warning=True):
         with nvtx.annotate("diffuse", color="orange"):
             with nvtx.annotate("rand setup", color="orange"):
                 self.diffuse_voxel = cp.zeros(self.voxel_matrix_shape, dtype=cp.float16)
@@ -372,51 +393,98 @@ class RediCell_CuPy:
                         self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling[idx] < reaction_voxel)
                         
         self.cumulative_t += t_step
-
-        if log:
-            pass
-        self.t_trace.append(self.cumulative_t)
         self.current_conc = self.voxel_matrix.astype(cp.int32).sum(tuple(range(1, self.ndim+1))).get()
-        self.conc_trace.append(self.current_conc)
+
                 
-    def simulate(self, steps, t_step=None, plot_every=None, timing=False, 
+    def simulate(self, steps, t_step=None, 
                  maintain_every=100, log_every=500, 
-                 traj_every=10000, traj_filename='traj.npy', 
-                 checkpoint_every=10000, checkpoint_filename='checkpoint.pkl',
+                 traj_every=10000, checkpoint_every=10000, 
                  warning=True):
-        self.current_conc = self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1)))
+        
+        self.current_conc = self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1))).get()
+        
         if not self.initialized:
             self.initialize()
+        
         if t_step is not None:
             self.t_step = t_step
-        for step in tqdm(range(steps)):
+        
+        step_trace = []
+        t_trace = []
+        conc_trace = []
+
+        for step in tqdm(range(0, steps+1)):
             if step == 0: 
-                t0 = time.time()
-                print(f'Simulate {steps} steps')
-            if timing and steps > 100 and step % (steps // 100) == 0 and step > 0:
-                print(step, end=' ')
-            if timing and steps > 100 and step % (steps // 10) == 0 and step > 0:
-                t1 = time.time()
-                print(f'{(t1 - t0):.2f} s - {(t1-t0)*1000 / step:.2f} ms / step')
+                print(f'Simulate {steps + 1} steps')
+                
+            if checkpoint_every is not None:
+                if self.step % checkpoint_every == 0:
+                    pickle.dump(self, open(self.checkpoint_filename, 'wb'))
+            
+            if log_every is not None:
+                if (step == 0 and self.start_from_scratch) or (step > 0 and self.step % log_every == 0):
+                    step_trace.append(self.step)
+                    t_trace.append(self.cumulative_t)
+                    conc_trace.append(self.current_conc)
+                    
+            if traj_every is not None:        
+                if self.step % traj_every == 0:
+                    # save step, sim time, trajectory, also logs
+                    self.save_traj(self.step, step_trace, t_trace, conc_trace)
+                    self.frame += 1
+                    step_trace = []
+                    t_trace = []
+                    conc_trace = []
+                    
             with nvtx.annotate("simulate", color="orange"):
                 if step % maintain_every == 0:
                     self.maintain_external_conditions()
-                if step % log_every == 0:
-                    self.react_diffuse(self.t_step, warning=warning, log=True)
+                self.react_diffuse(self.t_step, warning=warning)
+
+            self.step += 1
+            self.start_from_scratch = False # So that further restarts won't have duplicate frames
+    
+    def save_traj(self, step, step_trace, t_trace, conc_trace):
+        # Open HDF5 as append
+        # Append dataset with name {self.frame} to data group
+        # dataset attributes: steps (step), cum_t
+        # Also dump step_trace, t_trace and conc_trace into log group
+        with h5py.File(self.traj_filename, 'a') as f:
+            if 'traj' not in f:
+                traj_data = f.create_dataset(f'traj/data', (1, *self.voxel_matrix_shape), maxshape=(None, *self.voxel_matrix_shape), compression='gzip')
+                traj_steps = f.create_dataset(f'traj/steps', (1), maxshape=(None,))
+                traj_cum_t = f.create_dataset(f'traj/cumulative_t', (1), maxshape=(None,))
+                traj_time_step = f.create_dataset(f'traj/time_step', (1), maxshape=(None,))   
+            else:
+                traj_data = f['traj/data']
+                traj_steps = f['traj/steps']
+                traj_cum_t = f['traj/cumulative_t']
+                traj_time_step = f['traj/time_step']
+            if self.frame >= len(traj_data):
+                traj_data.resize(len(traj_data) + 1, axis=0)
+                traj_steps.resize(len(traj_steps) + 1, axis=0)
+                traj_cum_t.resize(len(traj_cum_t) + 1, axis=0)
+                traj_time_step.resize(len(traj_time_step) + 1, axis=0)
+            traj_data[self.frame] = self.voxel_matrix.get()
+            traj_steps[self.frame] = self.step
+            traj_cum_t[self.frame] = self.cumulative_t
+            traj_time_step[self.frame] = self.t_step
+            if len(step_trace) > 0:
+                if 'log' not in f:
+                    log_step = f.create_dataset(f'log/step', len(step_trace), maxshape=(None,), data=step_trace)
+                    log_t = f.create_dataset(f'log/t', len(t_trace), maxshape=(None,), data=t_trace)
+                    log_conc = f.create_dataset(f'log/count', (len(conc_trace), self.num_types), maxshape=(None, self.num_types), data=conc_trace)
                 else:
-                    self.react_diffuse(self.t_step, warning=warning, log=False)
-            if traj_every is not None:        
-                if step % traj_every == 0:
-#                     print("Save traj")
-                    with open(traj_filename, 'ab') as f:
-                        cp.save(f, self.voxel_matrix)
-            if checkpoint_every is not None:
-                if step % checkpoint_every == 0:
-                    pickle.dump(self, open(checkpoint_filename, 'wb'))
-            if plot_every is not None:
-                if step % plot_every == 0:
-                    self.plot(self.molecule_names)
-        
+                    log_step = f['log/step']
+                    log_t = f['log/t']
+                    log_conc = f['log/count']
+                    log_step.resize(len(log_step)+len(step_trace), axis=0)
+                    log_t.resize(len(log_t)+len(t_trace), axis=0)
+                    log_conc.resize(len(log_conc)+len(conc_trace), axis=0)
+                    log_step[-len(step_trace):] = step_trace
+                    log_t[-len(t_trace):] = t_trace
+                    log_conc[-len(conc_trace):] = conc_trace
+    
     def plot(self, mol_type, wall=True):
         if self.ndim == 2:
             self.plot2D(mol_type, wall)
