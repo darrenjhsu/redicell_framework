@@ -15,8 +15,6 @@ class RediCell_CuPy:
         # spacing in m
         # "wall" adds one extra cell each direction, set as barrier
         
-        
-        
         if design is not None:
             self.spacing = design.spacing
             self.wall = design.wall
@@ -185,8 +183,7 @@ class RediCell_CuPy:
         # Compile all possible reactions (diffuse to 4 neighbors, reactions, and do nothing)
         # Calculate largest possible timestep
         with h5py.File(self.traj_filename, 'a') as f:
-            grp = f.create_group('metadata')
-#             mols = grp.create_dataset('metadata/mols', data=np.array(self.molecule_names))            
+            mols = f.create_dataset('metadata/mols', data=np.array(self.molecule_names, dtype='S'))            
         self.initialized = True
         
     def replace_reaction_set(self, reaction_set=None):
@@ -238,17 +235,33 @@ class RediCell_CuPy:
         else:
             print('No reactions')
             
-        
-
-    
     def determine_maximum_timestep(self):
         print(f'Max time step is {1 / np.max(np.array(self.diffusion_vector)/2/self.ndim) / 4 / self.voxel_matrix.max() :.2e} s (max {self.voxel_matrix.max()} particles in voxel)')
         return 1 / np.max(np.array(self.diffusion_vector)/2/self.ndim) / 4 / self.voxel_matrix.max()
         
-    def add_molecules(self, molecule_type, molecule_count):
-        self.molecule_count[molecule_type] = molecule_count
-        # distribute molecules randomly
-        pass
+    def add_molecules(self, location, name, count=None, uM=None):
+        if count is None and uM is None:
+            print(f'Neither count nor uM specified - do nothing and return')
+            return
+        elif isinstance(count, (int, float)) and isinstance(uM, (int, float)):
+            print(f'Both count and uM specified - I do not know what to do - do nothing and return')
+            return
+        
+        avail = np.where(location)
+        n_vox = len(avail[0])
+        if count is not None:
+            num_to_add = int(count)
+            print(f'Add {num_to_add} {name} molecules')
+        else: #molecule_concentration is not None
+            num_to_add = int(np.round(n_vox / self.one_per_voxel_equal_um * uM))
+            print(f'Add {num_to_add} {name} molecules ({num_to_add * self.one_per_voxel_equal_um / n_vox:.2f} uM)')
+        choice = np.random.choice(n_vox, num_to_add, replace=False)
+        sel = [x[choice] for x in avail]
+        if self.ndim == 2:
+            self.voxel_matrix[self.mol_to_id[name], sel[0], sel[1]] = 1
+        elif self.ndim == 3:
+            self.voxel_matrix[self.mol_to_id[name], sel[0], sel[1], sel[2]] = 1
+
 
     def add_external_conditions(self, region, molecule, concentration):
         # region is a space type index or a region specified by ones in a matrix same shape as self.true_sides
@@ -329,6 +342,8 @@ class RediCell_CuPy:
                 # Diffuse part
                 with nvtx.annotate("vox1", color="green"):    
                     self.diffuse_voxel[idx] = self.voxel_matrix[idx] * self.diffusion_vector[idx] 
+                    self.active_mol += 1
+                    self.active_mol_list += ' ' + self.id_to_mol[idx]
             with nvtx.annotate("choice", color="green"):
                 diffusion_choice = random_choice * (random_sampling < self.diffuse_voxel)
 
@@ -388,7 +403,7 @@ class RediCell_CuPy:
                             exponent = self.voxel_matrix[reagent[0]] * scaling
                         with nvtx.annotate("react 1 voxel", color="green"):
                             reaction_voxel = 1 - cp.exp(exponent)
-                    
+                    self.active_rxn += 1
                     with nvtx.annotate("move_react", color="green"):   
                         self.voxel_matrix += self.reaction_matrix_list[idx] * (random_sampling[idx] < reaction_voxel)
                         
@@ -412,37 +427,49 @@ class RediCell_CuPy:
         step_trace = []
         t_trace = []
         conc_trace = []
+        self.active_mol = 0
+        self.active_mol_list = ''
+        self.active_rxn = 0
 
-        for step in tqdm(range(0, steps+1)):
-            if step == 0: 
-                print(f'Simulate {steps + 1} steps')
-                
-            if checkpoint_every is not None:
-                if self.step % checkpoint_every == 0:
-                    pickle.dump(self, open(self.checkpoint_filename, 'wb'))
-            
-            if log_every is not None:
-                if (step == 0 and self.start_from_scratch) or (step > 0 and self.step % log_every == 0):
-                    step_trace.append(self.step)
-                    t_trace.append(self.cumulative_t)
-                    conc_trace.append(self.current_conc)
-                    
-            if traj_every is not None:        
-                if self.step % traj_every == 0:
-                    # save step, sim time, trajectory, also logs
-                    self.save_traj(self.step, step_trace, t_trace, conc_trace)
-                    self.frame += 1
-                    step_trace = []
-                    t_trace = []
-                    conc_trace = []
-                    
-            with nvtx.annotate("simulate", color="orange"):
-                if step % maintain_every == 0:
-                    self.maintain_external_conditions()
-                self.react_diffuse(self.t_step, warning=warning)
+        with tqdm(total=steps+1, bar_format="{percentage:3.1f}% |{bar}|{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, {postfix[0]}={postfix[1][value]} ({postfix[1][list]} ), {postfix[2]}={postfix[3][value]:2d}]", mininterval=0.05,
+          postfix=["Act Mol", {"value": 0, 'list': 0}, "Act Rxn", {"value": 0}]) as t:
+            for step in range(0, steps+1):
+                if step == 0: 
+                    print(f'Simulate {steps + 1} steps')
 
-            self.step += 1
-            self.start_from_scratch = False # So that further restarts won't have duplicate frames
+                if checkpoint_every is not None:
+                    if self.step % checkpoint_every == 0:
+                        pickle.dump(self, open(self.checkpoint_filename, 'wb'))
+
+                if log_every is not None:
+                    if (step == 0 and self.start_from_scratch) or (step > 0 and self.step % log_every == 0):
+                        step_trace.append(self.step)
+                        t_trace.append(self.cumulative_t)
+                        conc_trace.append(self.current_conc)
+
+                if traj_every is not None:        
+                    if self.step % traj_every == 0:
+                        # save step, sim time, trajectory, also logs
+                        self.save_traj(self.step, step_trace, t_trace, conc_trace)
+                        self.frame += 1
+                        step_trace = []
+                        t_trace = []
+                        conc_trace = []
+
+                with nvtx.annotate("simulate", color="orange"):
+                    if step % maintain_every == 0:
+                        self.maintain_external_conditions()
+                    self.react_diffuse(self.t_step, warning=warning)
+
+                self.step += 1
+                t.postfix[1]["value"] = self.active_mol
+                t.postfix[1]["list"] = self.active_mol_list
+                t.postfix[3]["value"] = self.active_rxn
+                t.update()
+                self.active_mol = 0
+                self.active_mol_list = ''
+                self.active_rxn = 0
+                self.start_from_scratch = False # So that further restarts won't have duplicate frames
     
     def save_traj(self, step, step_trace, t_trace, conc_trace):
         # Open HDF5 as append

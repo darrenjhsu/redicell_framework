@@ -87,38 +87,17 @@ def main(steps):
     a.configure_barrier()
     
     # Initial conditions
-
-    # 1 O and 9 R2
-    cyto_avail = np.where((a.special_space_type == 1) & (a.barrier_type != 4))
-    n_ca = len(cyto_avail[0])
-    OR2 = np.random.choice(n_ca, 10, replace=False)
-    ca_sel = [x[OR2] for x in cyto_avail]
-
-    a.voxel_matrix[a.mol_to_id['O'], ca_sel[0][0], ca_sel[1][0], ca_sel[2][0]] = 1
-    a.voxel_matrix[a.mol_to_id['R2'], ca_sel[0][1:], ca_sel[1][1:], ca_sel[2][1:]] = 1
-
-    # 30 Y
-    mem_avail = np.where(a.special_space_type == 2)
-    n_ma = len(mem_avail[0])
-    OR2 = np.random.choice(n_ma, 30, replace=False)
-    ma_sel = [x[OR2] for x in mem_avail]
-    a.voxel_matrix[a.mol_to_id['Y'], ma_sel[0], ma_sel[1], ma_sel[2]] = 1
-
-    # 5 uM of Iex and I
-    ext_avail = np.where(a.special_space_type > -1)
-    n_ea = len(ext_avail[0])
-    n_Iex = int(n_ea / a.one_per_voxel_equal_um * 5.0)
-    print(n_ea, n_Iex)
-    Iex = np.random.choice(n_ea, n_Iex, replace=False)
-    ea_sel = [x[Iex] for x in ext_avail]
-    a.voxel_matrix[a.mol_to_id['Iex'], ea_sel[0], ea_sel[1], ea_sel[2]] = 1
-
-    cyto_all = np.where(a.special_space_type > -1)
-    n_call = len(cyto_all[0])
-    n_Iin = int(n_call / a.one_per_voxel_equal_um * 5.0)
-    Iin = np.random.choice(n_ea, n_Iin, replace=False)
-    call_sel = [x[Iin] for x in cyto_all]
-    a.voxel_matrix[a.mol_to_id['I'], call_sel[0], call_sel[1], call_sel[2]] = 1
+    # Type   Space_type    Barrier_type
+    #    0   External      Border wall
+    #    1   Cytoplasm     Membrane
+    #    2   Membrane      Cytoplasm
+    #    3   None          External
+    #    4   None          Cytoplasm_blockers
+    a.add_molecules((a.special_space_type == 1) & (a.barrier_type != 4), 'O', count=1)
+    a.add_molecules((a.special_space_type == 1) & (a.barrier_type != 4), 'R2', count=9)
+    a.add_molecules(a.special_space_type == 2, 'Y', count=30)
+    a.add_molecules(a.special_space_type > -1, 'Iex', uM=5)
+    a.add_molecules(a.special_space_type > -1, 'I', uM=5)
 
     
     a.maintain_external_conditions()
