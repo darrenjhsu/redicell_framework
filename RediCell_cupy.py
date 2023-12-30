@@ -10,7 +10,7 @@ import h5py
 
 class RediCell_CuPy:
     
-    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True, design=None, project_name='redicell'):
+    def __init__(self, sides=None, spacing=None, t_step=None, molecule_types=None, reaction_set=None, wall=True, design=None, project_name='redicell', out_freq=0.1):
         # sides in number of voxels
         # spacing in m
         # "wall" adds one extra cell each direction, set as barrier
@@ -83,7 +83,7 @@ class RediCell_CuPy:
         
         self.timestamp = time.time()
         self.timestring = self.convert_timestamp(self.timestamp) # Used for suffixing file
-        self.project_name = project_name + self.timestring
+        self.project_name = project_name + "-" + self.timestring
         self.checkpoint_filename = self.project_name + '.ckpt'
         self.traj_filename = self.project_name + '.hdf5'
         self.step = 0
@@ -414,7 +414,7 @@ class RediCell_CuPy:
     def simulate(self, steps, t_step=None, 
                  maintain_every=100, log_every=500, 
                  traj_every=10000, checkpoint_every=10000, 
-                 warning=True):
+                 warning=True, out_freq=0.1):
         
         self.current_conc = self.voxel_matrix.astype(cp.float32).sum(tuple(range(1, self.ndim+1))).get()
         
@@ -431,7 +431,7 @@ class RediCell_CuPy:
         self.active_mol_list = ''
         self.active_rxn = 0
 
-        with tqdm(total=steps+1, bar_format="{percentage:3.1f}% |{bar}|{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, {postfix[0]}={postfix[1][value]} ({postfix[1][list]} ), {postfix[2]}={postfix[3][value]:2d}]", mininterval=0.05,
+        with tqdm(total=steps+1, bar_format="{percentage:3.1f}% |{bar}|{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}, {postfix[0]}={postfix[1][value]} ({postfix[1][list]} ), {postfix[2]}={postfix[3][value]:2d}]", mininterval=out_freq,
           postfix=["Act Mol", {"value": 0, 'list': 0}, "Act Rxn", {"value": 0}]) as t:
             for step in range(0, steps+1):
                 if step == 0: 

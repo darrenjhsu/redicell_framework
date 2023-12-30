@@ -9,7 +9,7 @@ import nvtx
 # from cupyx.profiler import benchmark
 # import cupy
 
-def main(steps):
+def main(steps, name, conc, out_freq):
     d = DesignTool()
     d.get_blanket_space([119, 57, 57], spacing=16e-9, wall=False)
     d.add_ecoli_rod(l=1.8e-6, r=0.4e-6, barrier_type=1, space_type=1, offsety=0, thickness=2, method='const')#, offsety=1.6e-7)
@@ -73,15 +73,15 @@ def main(steps):
     rxset.add_reaction(['YI'], ['Y', 'Iex'], 1.2e-1)
     rxset.add_reaction(['YI'], ['Y', 'I'], 1.2e+1)
 
-
-    a = RediCell_CuPy(design=d, molecule_types=molset, reaction_set=rxset, t_step=50e-6)
+    a = RediCell_CuPy(design=d, molecule_types=molset, reaction_set=rxset, t_step=50e-6, project_name=name)
     a_supply_matrix = cp.zeros(a.true_sides)
     a_supply_matrix[:, :, [0, -1]] = 1
     a_supply_matrix[:, [0, -1], :] = 1
     a_supply_matrix[[0, -1], :, :] = 1
 
-    a.add_external_conditions(a_supply_matrix, mol_Iex, 5)
-    a.show_external_conditions()
+    if conc > 0:
+        a.add_external_conditions(a_supply_matrix, mol_Iex, conc)
+        a.show_external_conditions()
     
     a.partition()
     a.configure_barrier()
@@ -94,20 +94,24 @@ def main(steps):
     #    3   None          External
     #    4   None          Cytoplasm_blockers
     a.add_molecules((a.special_space_type == 1) & (a.barrier_type != 4), 'O', count=1)
-    a.add_molecules((a.special_space_type == 1) & (a.barrier_type != 4), 'R2', count=9)
+    a.add_molecules((a.special_space_type == 1) & (a.barrier_type != 4), 'R2', count=10)
     a.add_molecules(a.special_space_type == 2, 'Y', count=30)
-    a.add_molecules(a.special_space_type > -1, 'Iex', uM=5)
-    a.add_molecules(a.special_space_type > -1, 'I', uM=5)
+    if conc > 0:
+        a.add_molecules(a.special_space_type > -1, 'Iex', uM=conc)
+        a.add_molecules(a.special_space_type > -1, 'I', uM=conc)
 
     
     a.maintain_external_conditions()
     
     a.determine_maximum_timestep()
     
-    a.simulate(steps, t_step=5e-5, traj_every=5000, log_every=100, checkpoint_every=50000)
+    a.simulate(steps, t_step=5e-5, traj_every=50000, log_every=100, checkpoint_every=50000, out_freq=out_freq)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--steps', type=int, default=5000)
+    parser.add_argument('--name', type=str, default='redicell')
+    parser.add_argument('--conc', type=float, default=5.0)
+    parser.add_argument('--out_freq', type=float, default=0.1) # Change to 5 if too much output
     args = parser.parse_args()
-    main(steps=args.steps)
+    main(steps=args.steps, name=args.name, conc=args.conc, out_freq=args.out_freq)
